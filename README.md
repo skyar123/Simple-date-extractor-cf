@@ -61,7 +61,12 @@ Theo W, 2025-01-09, 2026-04-01
 ```
 
 - **Caseload exports** print the birth date twice and the admission date with a
-  clock time — that is how the two are told apart.
+  clock time — that is how the two are told apart. Title lines and the
+  `16 client(s) on caseload` line are skipped, and that declared count is checked
+  against how many rows actually parsed, so a client that failed to copy is
+  reported rather than silently missing.
+- **`Last, First` flips to `First Last`**, including multi-word surnames
+  (`Delacroix Vance, Rowan` → `Rowan Delacroix Vance`).
 - **Labels win** over position, so `DOB …` and `intake …` are always believed.
 - **Two bare dates** on a line read as birthday first, intake second.
 - **A header row** (`Child Name`, `Date of Birth`, `Admission Date` …) switches on
@@ -71,6 +76,28 @@ Theo W, 2025-01-09, 2026-04-01
 
 Whatever it works out lands in a review table first. Fix anything that went into
 the wrong column before it becomes a calendar.
+
+**Re-pasting is the way to stay current.** Paste the whole caseload again
+whenever it changes: rows matching someone already on your list update them in
+place rather than adding a second copy, and the button says exactly what will
+happen (`Add 2, update 14`). A match needs a shared date of birth plus either the
+same name or the same intake date — date of birth alone is not enough, since
+siblings share one.
+
+## Two switches worth knowing about
+
+Both live under **Export**, and both are remembered.
+
+**Leave out dates that already passed** (on by default). A family eight months
+into service has its baseline and early plan reviews behind it; importing those
+scatters stale entries back through your calendar. This keeps the export
+forward-looking. Birthdays and the 90-day SNIFF are never dropped — their next
+occurrence is still ahead — and everything stays visible under *What's coming*.
+
+**Initials only.** A calendar file travels: onto a phone, into a synced account,
+onto a lock screen. This renders every event as `R.D.V. — 6-month reassessment
+due` instead of the child's full name, filenames included, while keeping every
+date intact. Your full list stays in this browser either way.
 
 ## Getting the calendars into Google
 
@@ -97,7 +124,7 @@ doing before you clear site data.
 npm install
 npm run dev      # local dev server
 npm run build    # production build into dist/
-npm test         # 40 checks over the date math, the parser, and the .ics output
+npm test         # 51 checks over the date math, the parser, and the .ics output
 ```
 
 Deploy on Netlify by connecting this repository directly — `netlify.toml` at

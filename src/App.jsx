@@ -11,8 +11,8 @@ import {
 } from './rules.js';
 import { parseCaseload, uid } from './parse.js';
 import {
-  buildCaseloadIcs, buildClientIcs, buildZip, downloadBlob, downloadText,
-  googleCalendarUrl, slug,
+  buildCaseloadIcs, buildClientIcs, buildZip, countPastDates, downloadBlob,
+  downloadText, displayName, googleCalendarUrl, slug,
 } from './ics.js';
 
 /* ============================================================
@@ -33,6 +33,30 @@ const emptyClient = () => ({
   intakeDate: '', birthDate: '', type: 'child', notes: '',
 });
 
+// Names are compared loosely — punctuation, spacing and "Last, First" order all
+// vary between a caseload export and something typed by hand.
+const nameKey = (s) => String(s || '')
+  .toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean).sort().join(' ');
+
+/**
+ * Is this parsed row the same child as one already on the list? A shared date of
+ * birth plus either the same name or the same intake date is treated as a match;
+ * date of birth alone is not, since siblings and twins share one.
+ */
+export const isSameClient = (a, b) => {
+  if (!a || !b) return false;
+  const sameDob = !!a.dob && a.dob === b.dob;
+  const sameName = !!nameKey(a.name) && nameKey(a.name) === nameKey(b.name);
+  const sameIntake = !!a.intakeDate && a.intakeDate === b.intakeDate;
+  if (sameDob && (sameName || sameIntake)) return true;
+  return sameName && sameIntake;
+};
+
+// Only carry over fields the paste actually filled in, so re-pasting a trimmed
+// export never blanks out a detail that was added by hand.
+const stripEmpty = (row) =>
+  Object.fromEntries(Object.entries(row).filter(([k, v]) => k !== 'id' && v !== '' && v != null));
+
 const SAMPLE = `Ramirez, Ava (23641)   4/12/2024   F   4/12/2024   999-99-9999   CF-AA   RHA Behavioral Health   2/03/2026 12:00 PM   Medicaid
 Nia B. — DOB 8/30/2022, caregiver DOB 5/2/1994, intake 11/17/2025
 Theo W, 2025-01-09, 2026-04-01`;
@@ -43,6 +67,8 @@ export default function App() {
   const [clients, setClients] = useState([]);
   const [leadTimes, setLeadTimes] = useState(DEFAULT_LEAD_TIMES);
   const [categories, setCategories] = useState(CATEGORY_ORDER);
+  const [nameStyle, setNameStyle] = useState('full');
+  const [skipPast, setSkipPast] = useState(true);
   const [tab, setTab] = useState('clients');
   const [loaded, setLoaded] = useState(false);
   const [toast, setToast] = useState('');
@@ -56,6 +82,8 @@ export default function App() {
         if (Array.isArray(saved.clients)) setClients(saved.clients);
         if (saved.leadTimes) setLeadTimes({ ...DEFAULT_LEAD_TIMES, ...saved.leadTimes });
         if (Array.isArray(saved.categories) && saved.categories.length) setCategories(saved.categories);
+        if (saved.nameStyle) setNameStyle(saved.nameStyle);
+        if (typeof saved.skipPast === 'boolean') setSkipPast(saved.skipPast);
       }
     } catch {
       /* corrupt or unavailable storage — start clean rather than blocking the app */
@@ -66,24 +94,24 @@ export default function App() {
   useEffect(() => {
     if (!loaded) return;
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ clients, leadTimes, categories }));
+      localStorage.setItem(STORE_KEY, JSON.stringify({ clients, leadTimes, categories, nameStyle, skipPast }));
     } catch {
       /* private mode / quota — the export buttons still work */
     }
-  }, [clients, leadTimes, categories, loaded]);
+  }, [clients, leadTimes, categories, nameStyle, skipPast, loaded]);
 
   const say = (message) => {
     setToast(message);
     setTimeout(() => setToast((t) => (t === message ? '' : t)), 3200);
   };
 
-  const exportOpts = { leadTimes, categories };
+  const exportOpts = { leadTimes, categories, nameStyle, skipPast };
 
   // ---- exports ----
   const exportClient = (client) => {
     const { ics, count } = buildClientIcs(client, exportOpts);
     if (!count) return say('Nothing to export for this client yet — add an intake date or a birthday.');
-    downloadText(ics, `${slug(client.name)}-due-dates.ics`);
+    downloadText(ics, `${slug(displayName(client, nameStyle))}-due-dates.ics`);
     say(`${count} date${count === 1 ? '' : 's'} exported for ${client.name}.`);
   };
 
@@ -98,14 +126,14 @@ export default function App() {
     const files = clients
       .map((c) => ({ client: c, built: buildClientIcs(c, exportOpts) }))
       .filter(({ built }) => built.count > 0)
-      .map(({ client, built }) => ({ name: `${slug(client.name)}-due-dates.ics`, text: built.ics }));
+      .map(({ client, built }) => ({ name: `${slug(displayName(client, nameStyle))}-due-dates.ics`, text: built.ics }));
     if (!files.length) return say('No dates to export yet.');
     downloadBlob(buildZip(files), `child-first-calendars-${todayISO()}.zip`);
     say(`${files.length} client calendar${files.length === 1 ? '' : 's'} zipped.`);
   };
 
   const backup = () => {
-    downloadText(JSON.stringify({ version: 1, savedAt: new Date().toISOString(), clients, leadTimes, categories }, null, 2),
+    downloadText(JSON.stringify({ version: 1, savedAt: new Date().toISOString(), clients, leadTimes, categories, nameStyle, skipPast }, null, 2),
       `due-dates-backup-${todayISO()}.json`, 'application/json');
     say('Backup saved.');
   };
@@ -119,6 +147,8 @@ export default function App() {
         setClients(data.clients);
         if (data.leadTimes) setLeadTimes({ ...DEFAULT_LEAD_TIMES, ...data.leadTimes });
         if (Array.isArray(data.categories) && data.categories.length) setCategories(data.categories);
+        if (data.nameStyle) setNameStyle(data.nameStyle);
+        if (typeof data.skipPast === 'boolean') setSkipPast(data.skipPast);
         say(`Restored ${data.clients.length} client${data.clients.length === 1 ? '' : 's'}.`);
       } catch {
         say('That file did not look like a Due Dates backup.');
@@ -179,6 +209,8 @@ export default function App() {
           <ExportTab
             clients={clients} leadTimes={leadTimes} setLeadTimes={setLeadTimes}
             categories={categories} setCategories={setCategories}
+            nameStyle={nameStyle} setNameStyle={setNameStyle}
+            skipPast={skipPast} setSkipPast={setSkipPast}
             exportClient={exportClient} exportAllCombined={exportAllCombined}
             exportAllZipped={exportAllZipped} backup={backup} restore={restore}
           />
@@ -217,9 +249,10 @@ function ClientsTab({ clients, setClients, exportClient, say, categories }) {
   const [paste, setPaste] = useState('');
   const [review, setReview] = useState(null);
   const [skipped, setSkipped] = useState([]);
+  const [declaredCount, setDeclaredCount] = useState(null);
 
   const read = () => {
-    const { clients: parsed, skipped: missed } = parseCaseload(paste);
+    const { clients: parsed, skipped: missed, declaredCount: declared } = parseCaseload(paste);
     if (!parsed.length) {
       say(missed.length ? 'No dates found in that paste — check the review tips below.' : 'Nothing to read yet.');
       setSkipped(missed);
@@ -227,14 +260,35 @@ function ClientsTab({ clients, setClients, exportClient, say, categories }) {
     }
     setReview(parsed);
     setSkipped(missed);
+    setDeclaredCount(declared);
   };
 
+  // Re-pasting the caseload is the normal way to keep it current, so a row that
+  // matches someone already on the list updates them in place instead of
+  // creating a second copy of the same child.
   const commit = () => {
-    setClients((prev) => [...prev, ...review]);
-    say(`Added ${review.length} client${review.length === 1 ? '' : 's'}.`);
+    let added = 0;
+    let updated = 0;
+    setClients((prev) => {
+      const next = [...prev];
+      review.forEach((row) => {
+        const at = next.findIndex((c) => isSameClient(c, row));
+        if (at === -1) { next.push(row); added++; return; }
+        // Keep the existing id (its calendar UIDs are built from it) and any
+        // detail the paste does not carry, such as a logged birth date.
+        next[at] = { ...next[at], ...stripEmpty(row), id: next[at].id };
+        updated++;
+      });
+      return next;
+    });
+    const parts = [];
+    if (added) parts.push(`Added ${added}`);
+    if (updated) parts.push(`updated ${updated}`);
+    say(`${parts.join(', ')}.`);
     setReview(null);
     setPaste('');
     setSkipped([]);
+    setDeclaredCount(null);
   };
 
   const update = (id, patch) =>
@@ -284,6 +338,8 @@ function ClientsTab({ clients, setClients, exportClient, say, categories }) {
         <ReviewTable
           rows={review}
           setRows={setReview}
+          existing={clients}
+          declaredCount={declaredCount}
           onConfirm={commit}
           onCancel={() => setReview(null)}
         />
@@ -317,9 +373,13 @@ function ClientsTab({ clients, setClients, exportClient, say, categories }) {
 const confirm2 = (n) =>
   window.confirm(`Remove all ${n} clients from this browser? Export or back up first if you want to keep them.`);
 
-function ReviewTable({ rows, setRows, onConfirm, onCancel }) {
+function ReviewTable({ rows, setRows, existing = [], declaredCount = null, onConfirm, onCancel }) {
   const set = (id, patch) => setRows(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   const drop = (id) => setRows(rows.filter((r) => r.id !== id));
+
+  const matches = rows.map((r) => existing.find((c) => isSameClient(c, r)) || null);
+  const updating = matches.filter(Boolean).length;
+  const countOff = declaredCount != null && declaredCount !== rows.length;
 
   return (
     <div className="card mt-5 review">
@@ -328,8 +388,31 @@ function ReviewTable({ rows, setRows, onConfirm, onCancel }) {
         Fix anything that landed in the wrong column — the birthday and the intake date are
         the two that drive every deadline.
       </p>
-      {rows.map((r) => (
+
+      {countOff && (
+        <div className="issue issue-warn mt-2">
+          <AlertTriangle size={13} /> The paste says {declaredCount} client
+          {declaredCount === 1 ? '' : 's'}, but {rows.length} row
+          {rows.length === 1 ? '' : 's'} came through — a line may not have copied cleanly.
+        </div>
+      )}
+      {declaredCount != null && !countOff && (
+        <div className="issue issue-ok mt-2">
+          <Check size={13} /> All {declaredCount} clients on the paste came through.
+        </div>
+      )}
+      {updating > 0 && (
+        <div className="issue issue-info mt-2">
+          <Info size={13} /> {updating} of these {updating === 1 ? 'is' : 'are'} already on your
+          list — {updating === 1 ? 'it' : 'they'} will be updated, not added twice.
+        </div>
+      )}
+
+      {rows.map((r, i) => (
         <div className="review-row" key={r.id}>
+          {matches[i] && (
+            <div className="dupe-tag">Updates {matches[i].name || 'an existing client'}</div>
+          )}
           <div className="review-grid">
             <Field label="Name">
               <input className="in" value={r.name} onChange={(e) => set(r.id, { name: e.target.value })} />
@@ -352,7 +435,12 @@ function ReviewTable({ rows, setRows, onConfirm, onCancel }) {
       ))}
       <div className="flex gap-2 mt-4 flex-wrap">
         <button className="btn-primary" onClick={onConfirm} disabled={!rows.length}>
-          <Plus size={16} /> Add {rows.length} client{rows.length === 1 ? '' : 's'}
+          <Plus size={16} />
+          {updating === rows.length
+            ? `Update ${rows.length} client${rows.length === 1 ? '' : 's'}`
+            : updating > 0
+              ? `Add ${rows.length - updating}, update ${updating}`
+              : `Add ${rows.length} client${rows.length === 1 ? '' : 's'}`}
         </button>
         <button className="btn-quiet" onClick={onCancel}>Back to the paste box</button>
       </div>
@@ -606,13 +694,15 @@ function UpcomingRow({ m }) {
 
 function ExportTab({
   clients, leadTimes, setLeadTimes, categories, setCategories,
+  nameStyle, setNameStyle, skipPast, setSkipPast,
   exportClient, exportAllCombined, exportAllZipped, backup, restore,
 }) {
   const fileRef = useRef(null);
   const total = useMemo(
-    () => clients.reduce((n, c) => n + getClientSchedule(c).filter((m) => categories.includes(m.category)).length, 0),
-    [clients, categories]
+    () => clients.reduce((n, c) => n + buildClientIcs(c, { categories, skipPast }).count, 0),
+    [clients, categories, skipPast]
   );
+  const pastCount = useMemo(() => countPastDates(clients, { categories }), [clients, categories]);
 
   return (
     <section className="mt-5">
@@ -630,6 +720,48 @@ function ExportTab({
           <button className="btn-ghost-solid" onClick={exportAllCombined} disabled={!clients.length}>
             <CalendarDays size={16} /> Everything in one .ics
           </button>
+        </div>
+
+        {pastCount > 0 && (
+          <label className="skip-past mt-4">
+            <input type="checkbox" checked={skipPast} onChange={(e) => setSkipPast(e.target.checked)} />
+            <span>
+              <strong>Leave out the {pastCount} date{pastCount === 1 ? '' : 's'} that already passed.</strong>
+              <br />
+              Families already months into service have baselines and plan reviews behind them.
+              Importing those puts stale entries back through your calendar. They stay visible
+              under <em>What&apos;s coming</em> either way, and birthdays and the 90-day SNIFF are
+              never dropped.
+            </span>
+          </label>
+        )}
+
+        <div className="per-client mt-4">
+          <div className="field-label">Names inside the calendar</div>
+          <p className="hint">
+            A calendar file travels — onto your phone, into a synced account. Initials keep
+            every date intact while showing less on a lock screen. Your full list stays here
+            either way.
+          </p>
+          <div className="flex gap-2 flex-wrap mt-2">
+            <button
+              className={'seg ' + (nameStyle === 'full' ? 'seg-on' : '')}
+              onClick={() => setNameStyle('full')}
+            >
+              Full name
+            </button>
+            <button
+              className={'seg ' + (nameStyle === 'initials' ? 'seg-on' : '')}
+              onClick={() => setNameStyle('initials')}
+            >
+              Initials only
+            </button>
+          </div>
+          {clients.length > 0 && (
+            <div className="preview-line mt-2">
+              Events will read <strong>{displayName(clients[0], nameStyle)} — 6-month reassessment due</strong>
+            </div>
+          )}
         </div>
 
         {clients.length > 0 && (
@@ -873,6 +1005,17 @@ code { background:#F1EFE6; border-radius:5px; padding:1px 5px; font-size:12.5px;
 .steps strong { color:var(--ink); }
 .steps a { color:var(--pine); }
 .per-client { border-top:1px solid var(--line); padding-top:12px; }
+.seg { background:var(--paper); border:1px solid var(--line); border-radius:999px; padding:7px 15px; font-family:inherit; font-size:13.5px; font-weight:600; color:var(--ink-soft); cursor:pointer; }
+.seg:hover { border-color:#CBDDCE; color:var(--ink); }
+.seg-on { background:var(--pine); border-color:var(--pine); color:#fff; }
+.seg-on:hover { background:var(--pine-deep); color:#fff; }
+.skip-past { display:flex; align-items:flex-start; gap:9px; background:var(--marigold-soft); border:1px solid #EFD9B4; border-radius:14px; padding:12px 14px; font-size:12.5px; line-height:1.5; color:#6E5424; cursor:pointer; }
+.skip-past input { width:16px; height:16px; margin-top:1px; flex-shrink:0; accent-color:var(--pine); }
+.skip-past strong { font-size:13.5px; color:#5A4318; }
+.preview-line { font-size:12.5px; color:var(--ink-soft); background:#F7F5EE; border-radius:10px; padding:8px 10px; }
+.preview-line strong { color:var(--ink); font-weight:600; }
+.dupe-tag { display:inline-block; font-size:10.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:#2C4A73; background:#E7EEF8; border-radius:999px; padding:2px 8px; margin-bottom:6px; }
+.issue-ok { background:var(--frp); color:var(--pine); }
 
 .toast { position:fixed; left:50%; bottom:20px; transform:translateX(-50%); background:var(--ink); color:#fff; font-size:13.5px; font-weight:600; padding:11px 18px; border-radius:999px; box-shadow:0 6px 20px rgba(34,51,59,.22); max-width:calc(100vw - 2rem); text-align:center; z-index:50; }
 

@@ -48,21 +48,53 @@ const recurrenceNote = {
   every90: ' (every 90 days)',
 };
 
-function eventLines(client, m, leadTimes) {
+/**
+ * How a client is named inside the calendar. A calendar file tends to travel —
+ * onto a phone, into a shared account, through a sync service — so 'initials'
+ * keeps every deadline intact while reducing what the events themselves reveal.
+ * The full record stays in this browser either way.
+ */
+export function displayName(client, nameStyle = 'full') {
+  const full = (client?.name || '').trim();
+  if (!full) return 'Client';
+  if (nameStyle !== 'initials') return full;
+  const initials = full
+    .split(/[\s,]+/).filter(Boolean)
+    .map((part) => part[0])
+    .filter((ch) => /[A-Za-z]/.test(ch))
+    .join('.')
+    .toUpperCase();
+  return initials ? `${initials}.` : 'Client';
+}
+
+function eventLines(client, m, leadTimes, nameStyle) {
   const lines = [];
-  const name = client.name || 'Client';
+  const name = displayName(client, nameStyle);
   const leads = leadTimes[m.category] || DEFAULT_LEAD_TIMES[m.category] || [7, 1];
   const overdue = !m.recurrence && m.date < todayISO();
   const isBirthday = m.category === 'birthday';
 
+  // Birthday labels are composed in rules.js and already carry the person's
+  // name ("Ava Ramirez turns 3"), so initials mode has to reach inside them too.
+  const caregiver = displayName({ name: client.caregiverName }, nameStyle);
+  const mask = (text) => {
+    if (nameStyle !== 'initials') return text;
+    let out = String(text ?? '');
+    const full = (client.name || '').trim();
+    if (full) out = out.split(full).join(name);
+    const cg = (client.caregiverName || '').trim();
+    if (cg) out = out.split(cg).join(caregiver);
+    return out;
+  };
+
   const summary = isBirthday
-    ? `🎂 ${m.label}`
+    ? `🎂 ${mask(m.label)}`
     : `${overdue ? '⚠ OVERDUE · ' : ''}${name} — ${m.label}`;
 
   const body = [];
-  if (m.detail) body.push(m.detail);
+  if (m.detail) body.push(mask(m.detail));
   if (m.items?.length) body.push(`Required: ${m.items.join(', ')}.`);
-  if (client.caregiverName) body.push(`Caregiver: ${client.caregiverName}`);
+  if (client.caregiverName) body.push(`Caregiver: ${caregiver}`);
   if (client.intakeDate) body.push(`Intake: ${formatDate(client.intakeDate)}`);
   body.push('(Due Dates — Child First)');
 
@@ -94,7 +126,7 @@ function eventLines(client, m, leadTimes) {
     else lines.push(`TRIGGER:-P${days}D`);
     lines.push('ACTION:DISPLAY');
     const when = days === 0 ? 'today' : `in ${days} day${days === 1 ? '' : 's'}`;
-    const what = isBirthday ? m.label : `${name}: ${m.label}`;
+    const what = isBirthday ? mask(m.label) : `${name}: ${m.label}`;
     lines.push(`DESCRIPTION:${esc(`${what} — ${when}${recurrenceNote[m.recurrence] || ''}`)}`);
     lines.push('END:VALARM');
   });
@@ -109,14 +141,30 @@ const nextDay = (ymd) => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 };
 
+// A milestone that has already come and gone is history, not a reminder. Its
+// place is the app's own past-due list, not 46 stale entries scattered back
+// through a real calendar. Recurring dates (birthdays, the 90-day SNIFF) always
+// stay: their next occurrence is still ahead.
+const keepMilestone = (m, skipPast) => !skipPast || !!m.recurrence || m.date >= todayISO();
+
+/**
+ * How many one-time dates a client has already passed — what `skipPast` drops.
+ */
+export function countPastDates(clients, { categories = null } = {}) {
+  return clients.reduce((n, c) => n + getClientSchedule(c)
+    .filter((m) => (!categories || categories.includes(m.category)) && !keepMilestone(m, true))
+    .length, 0);
+}
+
 /**
  * One .ics for one client — this is the per-client calendar.
  * `options.categories` limits which milestone categories are included.
  */
-export function buildClientIcs(client, { leadTimes = DEFAULT_LEAD_TIMES, categories = null } = {}) {
-  const name = client.name || 'Client';
+export function buildClientIcs(client, { leadTimes = DEFAULT_LEAD_TIMES, categories = null, nameStyle = 'full', skipPast = false } = {}) {
+  const name = displayName(client, nameStyle);
   const schedule = getClientSchedule(client)
-    .filter((m) => !categories || categories.includes(m.category));
+    .filter((m) => !categories || categories.includes(m.category))
+    .filter((m) => keepMilestone(m, skipPast));
 
   const lines = [
     'BEGIN:VCALENDAR',
@@ -127,14 +175,14 @@ export function buildClientIcs(client, { leadTimes = DEFAULT_LEAD_TIMES, categor
     `X-WR-CALNAME:${esc(`${name} — Due Dates`)}`,
     `X-WR-CALDESC:${esc(`Child First due dates and reminders for ${name}.`)}`,
   ];
-  schedule.forEach((m) => lines.push(...eventLines(client, m, leadTimes)));
+  schedule.forEach((m) => lines.push(...eventLines(client, m, leadTimes, nameStyle)));
   lines.push('END:VCALENDAR');
 
   return { ics: lines.map(fold).join('\r\n') + '\r\n', count: schedule.length };
 }
 
 /** One .ics holding every client — handy for a single "everything" calendar. */
-export function buildCaseloadIcs(clients, { leadTimes = DEFAULT_LEAD_TIMES, categories = null } = {}) {
+export function buildCaseloadIcs(clients, { leadTimes = DEFAULT_LEAD_TIMES, categories = null, nameStyle = 'full', skipPast = false } = {}) {
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
@@ -147,7 +195,8 @@ export function buildCaseloadIcs(clients, { leadTimes = DEFAULT_LEAD_TIMES, cate
   clients.forEach((client) => {
     getClientSchedule(client)
       .filter((m) => !categories || categories.includes(m.category))
-      .forEach((m) => { count++; lines.push(...eventLines(client, m, leadTimes)); });
+      .filter((m) => keepMilestone(m, skipPast))
+      .forEach((m) => { count++; lines.push(...eventLines(client, m, leadTimes, nameStyle)); });
   });
   lines.push('END:VCALENDAR');
   return { ics: lines.map(fold).join('\r\n') + '\r\n', count };

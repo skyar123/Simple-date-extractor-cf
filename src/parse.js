@@ -121,8 +121,10 @@ function extractName(line, firstDateIndex) {
     .replace(/[\s,;:|\-–—]+$/, '')       // trailing separator left behind by a label
     .replace(/\s{2,}/g, ' ')
     .trim();
-  // "Last, First" reads better as "First Last" on a calendar entry.
-  const swap = head.match(/^([A-Za-z'’\-.]+),\s*([A-Za-z][A-Za-z'’\-.\s]*)$/);
+  // "Last, First" reads better as "First Last" on a calendar entry. The surname
+  // side may itself hold spaces ("Delacroix Vance, Rowan"); neither side may hold
+  // a comma, so a name with more than one comma is left exactly as pasted.
+  const swap = head.match(/^([A-Za-z'’\-.][A-Za-z'’\-.\s]*),\s*([A-Za-z][A-Za-z'’\-.\s]*)$/);
   if (swap) head = `${swap[2].trim()} ${swap[1].trim()}`;
   return head.replace(/[\s,]+$/, '').trim();
 }
@@ -174,14 +176,29 @@ function rowFromCells(cells, headerMap) {
   return c;
 }
 
+// A caseload export usually announces its own size ("16 client(s) on caseload").
+// When it does, that number is worth keeping: comparing it against how many rows
+// actually parsed catches a silently dropped client, which is the one failure
+// here that would otherwise pass unnoticed.
+const DECLARED_COUNT = /\b(\d{1,4})\s+client\(?s?\)?\b/i;
+
+export function findDeclaredCount(text) {
+  const m = String(text || '').match(DECLARED_COUNT);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 && n < 2000 ? n : null;
+}
+
 /**
  * Parse a block of pasted text into client rows.
- * Returns `{ clients, skipped }` — `skipped` holds lines that held no usable date.
+ * Returns `{ clients, skipped, declaredCount }` — `skipped` holds lines that held
+ * no usable date, `declaredCount` is the caseload size the paste claims (or null).
  */
 export function parseCaseload(text) {
   const clients = [];
   const skipped = [];
-  if (!text || !text.trim()) return { clients, skipped };
+  const declaredCount = findDeclaredCount(text);
+  if (!text || !text.trim()) return { clients, skipped, declaredCount };
 
   const lines = String(text).replace(/\r\n?/g, '\n').split('\n');
 
@@ -257,7 +274,7 @@ export function parseCaseload(text) {
     clients.push(c);
   }
 
-  return { clients, skipped };
+  return { clients, skipped, declaredCount };
 }
 
 function finish(c, line) {

@@ -6,8 +6,8 @@ import assert from 'node:assert/strict';
 import {
   addDays, addMonths, formatAge, getClientSchedule, getIssues, getUpcoming, parseDate, toISODate,
 } from '../src/rules.js';
-import { findDates, parseCaseload } from '../src/parse.js';
-import { buildCaseloadIcs, buildClientIcs, buildZip, googleCalendarUrl, slug } from '../src/ics.js';
+import { findDates, findDeclaredCount, parseCaseload } from '../src/parse.js';
+import { buildCaseloadIcs, buildClientIcs, buildZip, countPastDates, displayName, googleCalendarUrl, slug } from '../src/ics.js';
 
 let passed = 0;
 const test = (name, fn) => {
@@ -298,6 +298,104 @@ test('the zip carries the right signatures, sizes and entry count', async () => 
   const centralOffset = view.getUint32(eocd + 16, true);
   assert.equal(view.getUint32(centralOffset, true), 0x02014b50, 'central directory header');
   assert.equal(view.getUint32(eocd + 12, true), eocd - centralOffset, 'central directory size');
+});
+
+
+// ---- real-world caseload paste -------------------------------------------
+// The shape a CFCR caseload export actually arrives in: a title line, a count
+// line, then tab-separated rows whose DOB sits flush against the client id.
+
+const CASELOAD = [
+  'Caseload for Reed, Jamie (10000)',
+  '16 client(s) on caseload',
+  '\t\t\tSmith, Aaron (10101) 5/14/2021\tM\t5/14/2021\t999-99-9999\tNC-CFCR RHA Behavioral Health\t1/20/2026 12:00 PM\t',
+  '\t\t\tDelacroix Vance, Rowan (10102) 9/06/2023\tF\t9/06/2023\t999-99-9999\tNC-CFCR RHA Behavioral Health\t4/15/2026 09:00 AM\t',
+].join('\n');
+
+test('a caseload export parses past its title and count lines', () => {
+  const { clients, skipped, declaredCount } = parseCaseload(CASELOAD);
+  assert.equal(clients.length, 2);
+  assert.equal(skipped.length, 2, 'the title and count lines are not clients');
+  assert.equal(declaredCount, 16);
+});
+
+test('a DOB flush against the client id is still read correctly', () => {
+  const { clients } = parseCaseload(CASELOAD);
+  assert.equal(clients[0].dob, '2021-05-14');
+  assert.equal(clients[0].intakeDate, '2026-01-20');
+  assert.equal(clients[0].name, 'Aaron Smith');
+});
+
+test('a multi-word surname survives the Last, First flip', () => {
+  const { clients } = parseCaseload(CASELOAD);
+  assert.equal(clients[1].name, 'Rowan Delacroix Vance');
+  assert.equal(clients[1].dob, '2023-09-06');
+  assert.equal(clients[1].intakeDate, '2026-04-15');
+});
+
+test('the declared caseload size is picked up across phrasings', () => {
+  assert.equal(findDeclaredCount('16 client(s) on caseload'), 16);
+  assert.equal(findDeclaredCount('7 clients'), 7);
+  assert.equal(findDeclaredCount('1 client'), 1);
+  assert.equal(findDeclaredCount('Caseload for Reed, Jamie (10000)'), null);
+});
+
+test('no social security number survives a full caseload paste', () => {
+  const { clients } = parseCaseload(CASELOAD);
+  assert.ok(!/\d{3}-\d{2}-\d{4}/.test(JSON.stringify(clients)));
+});
+
+// ---- initials mode ---------------------------------------------------------
+
+test('displayName reduces a name to initials on request', () => {
+  assert.equal(displayName({ name: 'Rowan Delacroix Vance' }, 'initials'), 'R.D.V.');
+  assert.equal(displayName({ name: 'Ava R' }, 'initials'), 'A.R.');
+  assert.equal(displayName({ name: 'Ava R' }, 'full'), 'Ava R');
+  assert.equal(displayName({ name: '' }, 'initials'), 'Client');
+});
+
+test('initials mode keeps full names out of the calendar entirely', () => {
+  const named = { ...client, name: 'Rowan Delacroix Vance', caregiverName: 'Dana Delacroix Vance' };
+  const { ics: masked } = buildClientIcs(named, { nameStyle: 'initials' });
+  assert.ok(!masked.includes('Rowan'), 'the child first name leaked');
+  assert.ok(!masked.includes('Delacroix'), 'the surname leaked');
+  assert.ok(!masked.includes('Dana'), 'the caregiver name leaked');
+  assert.ok(masked.includes('R.D.V.'));
+  // The birthday summary is composed upstream in rules.js, so check it too.
+  const bday = masked.split('BEGIN:VEVENT').find((b) => b.includes('turns'));
+  assert.ok(!bday.includes('Rowan'), 'the birthday label leaked the full name');
+});
+
+test('full-name mode is unchanged', () => {
+  const named = { ...client, name: 'Rowan Delacroix Vance' };
+  assert.ok(buildClientIcs(named, { nameStyle: 'full' }).ics.includes('Rowan Delacroix Vance'));
+  assert.ok(buildClientIcs(named).ics.includes('Rowan Delacroix Vance'), 'full is the default');
+});
+
+
+// ---- skipping dates that already passed -------------------------------------
+
+test('skipPast drops one-time dates behind us but keeps recurring ones', () => {
+  // A year in service: baseline, initial plan and the 6-month are all history.
+  const old = { id: 'o', name: 'Old Case', dob: '2021-05-04', intakeDate: addDays(toISODate(new Date()), -365) };
+  const all = buildClientIcs(old);
+  const ahead = buildClientIcs(old, { skipPast: true });
+  assert.ok(ahead.count < all.count, 'skipPast should remove something');
+  assert.ok(ahead.ics.includes('RRULE:FREQ=YEARLY'), 'the birthday must survive');
+  assert.ok(ahead.ics.includes('RRULE:FREQ=DAILY;INTERVAL=90'), 'the SNIFF must survive');
+  assert.ok(!ahead.ics.includes('OVERDUE'), 'nothing left should be overdue');
+  assert.equal(countPastDates([old]), all.count - ahead.count);
+});
+
+test('skipPast leaves a brand-new client untouched', () => {
+  const fresh = { id: 'f', name: 'New Case', dob: '2024-02-02', intakeDate: toISODate(new Date()) };
+  assert.equal(buildClientIcs(fresh, { skipPast: true }).count, buildClientIcs(fresh).count);
+  assert.equal(countPastDates([fresh]), 0);
+});
+
+test('skipPast is off unless asked for', () => {
+  const old = { id: 'o2', name: 'Old', dob: '2021-05-04', intakeDate: addDays(toISODate(new Date()), -365) };
+  assert.equal(buildClientIcs(old).count, buildClientIcs(old, { skipPast: false }).count);
 });
 
 if (!process.exitCode) console.log(`✓ ${passed} tests passed`);
