@@ -32,10 +32,28 @@ From the **child's date of birth** (and the caregiver's, if you paste it):
 baseline at 60 days, then Birth of Child 60 days after the birth date you add,
 and the 6-month 240 days after that.
 
-## Reminders
+## Reminders — you see them coming
 
-Every event carries its own alarms, so once the file is imported your calendar
-app does the reminding — no backend, no subscription, nothing to keep running.
+Each lead time becomes **its own all-day entry on the calendar**, that many days
+before the deadline, so a warning is something you can see while planning the
+week rather than a notification that fires once and is gone:
+
+```
+Sat Aug 29   ⏳ 7 days · Rowan Delacroix — 6-month reassessment due
+Fri Sep 04   ⏳ 1 day  · Rowan Delacroix — 6-month reassessment due
+Sat Sep 05   🔴          Rowan Delacroix — 6-month reassessment due
+```
+
+The 🔴 entry is the deadline itself. Anything already past reads
+`⚠ OVERDUE`. Every entry also carries a 9am pop-up for the day it sits on, so
+you get both the visible countdown and the notification.
+
+Turn **advance warnings** off under Export and it reverts to one entry per
+deadline with the lead times as plain pop-ups.
+
+Entries are marked `COLOR:red` for the due date and orange/gold for the
+warnings. Some calendar apps honour that; Google keeps its own per-calendar
+colour and ignores it, which is why the wording carries the urgency on its own.
 
 | | Default lead time |
 | --- | --- |
@@ -47,7 +65,9 @@ app does the reminding — no backend, no subscription, nothing to keep running.
 | Age windows | 2 weeks |
 
 All of them are editable under **Export → Reminders**, and any category you do
-not want can be switched off entirely.
+not want can be switched off entirely. Each lead time you list produces one
+warning entry, so trimming `30, 7, 1` to `30, 7` halves the entries for that
+category.
 
 ## Pasting your caseload
 
@@ -84,9 +104,11 @@ happen (`Add 2, update 14`). A match needs a shared date of birth plus either th
 same name or the same intake date — date of birth alone is not enough, since
 siblings share one.
 
-## Two switches worth knowing about
+## Three switches worth knowing about
 
-Both live under **Export**, and both are remembered.
+All live under **Export**, and all are remembered.
+
+**Advance warnings on the calendar** (on by default) — described above.
 
 **Leave out dates that already passed** (on by default). A family eight months
 into service has its baseline and early plan reviews behind it; importing those
@@ -124,7 +146,7 @@ doing before you clear site data.
 npm install
 npm run dev      # local dev server
 npm run build    # production build into dist/
-npm test         # 51 checks over the date math, the parser, and the .ics output
+npm test         # 60 checks over the date math, the parser, and the .ics output
 ```
 
 Deploy on Netlify by connecting this repository directly — `netlify.toml` at

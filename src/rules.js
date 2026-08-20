@@ -206,9 +206,9 @@ export function getClientSchedule(client) {
   const intake = client.intakeDate;
   const pregnant = client.type === 'pregnant';
 
-  const push = (id, label, date, category, { items = [], detail = '', recurrence = null } = {}) => {
+  const push = (id, label, date, category, { items = [], detail = '', recurrence = null, turning = null } = {}) => {
     if (!date) return;
-    out.push({ id, label, date, category, items, detail, recurrence });
+    out.push({ id, label, date, category, items, detail, recurrence, turning });
   };
 
   // --- Birthdays: yearly, anchored on the next occurrence ---
@@ -226,9 +226,14 @@ export function getClientSchedule(client) {
   if (client.dob) {
     const d = nextBirthday(client.dob);
     const turning = d ? parseDate(d).getFullYear() - parseDate(client.dob).getFullYear() : null;
-    push('bday-child', `${client.name || 'Child'} turns ${turning}`, d, 'birthday', {
-      detail: `Birthday. Born ${formatDate(client.dob)}.`,
+    // The age stays out of the label: this event recurs yearly in the exported
+    // calendar, so a baked-in "turns 6" would still read "turns 6" the year they
+    // turn 7. `turning` is carried alongside for the in-app view, which is
+    // recomputed on every render and so is always current.
+    push('bday-child', `${client.name || 'Child'} — birthday`, d, 'birthday', {
+      detail: `Birthday. Born ${formatDate(client.dob)}${turning ? ` — turning ${turning} this year` : ''}.`,
       recurrence: 'yearly',
+      turning,
     });
   }
   if (client.caregiverDob) {

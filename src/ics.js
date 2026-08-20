@@ -7,7 +7,7 @@
 // leaves the browser.
 // ============================================================================
 
-import { CATEGORY_LABELS, DEFAULT_LEAD_TIMES, formatDate, getClientSchedule, parseDate, todayISO } from './rules.js';
+import { addDays, CATEGORY_LABELS, DEFAULT_LEAD_TIMES, formatDate, getClientSchedule, parseDate, todayISO } from './rules.js';
 
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -67,72 +67,137 @@ export function displayName(client, nameStyle = 'full') {
   return initials ? `${initials}.` : 'Client';
 }
 
-function eventLines(client, m, leadTimes, nameStyle) {
-  const lines = [];
+// One VEVENT, assembled from parts. Everything here is all-day: a deadline is a
+// day you must act by, not a half-hour appointment, and all-day entries sit in
+// the banner row where a whole week's warnings can be read at a glance.
+function vevent({ uid, date, summary, body, rrule, alarms = [], category, color }) {
+  const lines = ['BEGIN:VEVENT'];
+  lines.push(`UID:${uid}`);
+  lines.push(`DTSTAMP:${stamp()}`);
+  lines.push('SEQUENCE:1');
+  lines.push(`DTSTART;VALUE=DATE:${compact(date)}`);
+  lines.push(`DTEND;VALUE=DATE:${compact(nextDay(date))}`);
+  if (rrule) lines.push(rrule);
+  lines.push(`SUMMARY:${esc(summary)}`);
+  lines.push(`DESCRIPTION:${esc(body)}`);
+  lines.push(`CATEGORIES:Child First,${esc(category)}`);
+  // RFC 7986. Honoured by some clients and ignored by others (Google keeps its
+  // own per-calendar colour), so the wording carries the urgency regardless.
+  if (color) lines.push(`COLOR:${color}`);
+  lines.push('TRANSP:TRANSPARENT');
+  alarms.forEach(({ daysBefore = 0, text }) => {
+    lines.push('BEGIN:VALARM');
+    // These are all-day events, so a bare -P7D would fire at midnight. Offsetting
+    // in hours puts every alarm at 9am on its day instead.
+    lines.push(daysBefore > 0
+      ? `TRIGGER:-PT${daysBefore * 24 - 9}H`
+      : 'TRIGGER;RELATED=START:PT9H');
+    lines.push('ACTION:DISPLAY');
+    lines.push(`DESCRIPTION:${esc(text)}`);
+    lines.push('END:VALARM');
+  });
+  lines.push('END:VEVENT');
+  return lines;
+}
+
+/**
+ * Every calendar entry for one milestone.
+ *
+ * With `headsUp` on, each reminder lead time becomes a visible entry of its own
+ * sitting that many days earlier — "⏳ 30 days · M.B. — 6-month reassessment
+ * due" — so the warning is on the calendar where it can be seen while planning,
+ * not only in a notification that fires once and is gone. The due date itself
+ * then reads "🔴 DUE TODAY".
+ *
+ * With `headsUp` off, it is one entry on the due date carrying the lead times as
+ * plain VALARM notifications.
+ */
+function milestoneEvents(client, m, leadTimes, nameStyle, headsUp, skipPast) {
+  const out = [];
   const name = displayName(client, nameStyle);
-  const leads = leadTimes[m.category] || DEFAULT_LEAD_TIMES[m.category] || [7, 1];
-  const overdue = !m.recurrence && m.date < todayISO();
+  const leads = [...(leadTimes[m.category] || DEFAULT_LEAD_TIMES[m.category] || [7, 1])]
+    .filter((d) => Number.isFinite(d) && d >= 0)
+    .sort((a, b) => b - a);
+  const today = todayISO();
+  const overdue = !m.recurrence && m.date < today;
   const isBirthday = m.category === 'birthday';
+  const rrule = m.recurrence ? RECURRENCE_RULES[m.recurrence] : null;
+  const category = CATEGORY_LABELS[m.category] || 'Due date';
+  const baseUid = `${safeUid(client.id)}-${safeUid(m.id)}`;
 
   // Birthday labels are composed in rules.js and already carry the person's
   // name ("Ava Ramirez turns 3"), so initials mode has to reach inside them too.
   const caregiver = displayName({ name: client.caregiverName }, nameStyle);
   const mask = (text) => {
     if (nameStyle !== 'initials') return text;
-    let out = String(text ?? '');
+    let out2 = String(text ?? '');
     const full = (client.name || '').trim();
-    if (full) out = out.split(full).join(name);
+    if (full) out2 = out2.split(full).join(name);
     const cg = (client.caregiverName || '').trim();
-    if (cg) out = out.split(cg).join(caregiver);
-    return out;
+    if (cg) out2 = out2.split(cg).join(caregiver);
+    return out2;
   };
 
-  const summary = isBirthday
-    ? `🎂 ${mask(m.label)}`
-    : `${overdue ? '⚠ OVERDUE · ' : ''}${name} — ${m.label}`;
+  const what = isBirthday ? mask(m.label) : `${name} — ${m.label}`;
+  const detailLines = [];
+  if (m.detail) detailLines.push(mask(m.detail));
+  if (m.items?.length) detailLines.push(`Required: ${m.items.join(', ')}.`);
+  if (client.caregiverName) detailLines.push(`Caregiver: ${caregiver}`);
+  if (client.intakeDate) detailLines.push(`Intake: ${formatDate(client.intakeDate)}`);
+  detailLines.push('(Due Dates — Child First)');
 
-  const body = [];
-  if (m.detail) body.push(mask(m.detail));
-  if (m.items?.length) body.push(`Required: ${m.items.join(', ')}.`);
-  if (client.caregiverName) body.push(`Caregiver: ${caregiver}`);
-  if (client.intakeDate) body.push(`Intake: ${formatDate(client.intakeDate)}`);
-  body.push('(Due Dates — Child First)');
-
-  lines.push('BEGIN:VEVENT');
-  lines.push(`UID:${safeUid(client.id)}-${safeUid(m.id)}@duedates`);
-  lines.push(`DTSTAMP:${stamp()}`);
-  lines.push('SEQUENCE:1');
-
-  if (isBirthday) {
-    // All-day, so it sits in the banner row rather than blocking 8am.
-    lines.push(`DTSTART;VALUE=DATE:${compact(m.date)}`);
-    lines.push(`DTEND;VALUE=DATE:${compact(nextDay(m.date))}`);
-  } else {
-    lines.push(`DTSTART:${at(m.date, EVENT_HOUR)}`);
-    lines.push(`DTEND:${at(m.date, EVENT_HOUR, 30)}`);
+  // ---- the advance warnings ----
+  if (headsUp) {
+    leads.filter((d) => d > 0).forEach((d) => {
+      const when = addDays(m.date, -d);
+      // A warning whose own day has passed is not a warning any more.
+      if (!when || (skipPast && !m.recurrence && when < today)) return;
+      const countdown = `${d} day${d === 1 ? '' : 's'}`;
+      out.push(...vevent({
+        uid: `${baseUid}-lead${d}@duedates`,
+        date: when,
+        summary: isBirthday
+          ? `🎂 In ${countdown} · ${what}`
+          : `⏳ ${countdown} · ${what}`,
+        body: [
+          `Due ${formatDate(m.date, 'full')} — ${countdown} from this entry.`,
+          ...detailLines,
+        ].join('\n'),
+        rrule,
+        alarms: [{ text: `${what} — due in ${countdown}${recurrenceNote[m.recurrence] || ''}` }],
+        category,
+        color: d <= 7 ? 'orange' : 'gold',
+      }));
+    });
   }
 
-  if (m.recurrence && RECURRENCE_RULES[m.recurrence]) lines.push(RECURRENCE_RULES[m.recurrence]);
-  lines.push(`SUMMARY:${esc(summary)}`);
-  lines.push(`DESCRIPTION:${esc(body.join('\n'))}`);
-  lines.push(`CATEGORIES:Child First,${esc(CATEGORY_LABELS[m.category] || 'Due date')}`);
-  lines.push('TRANSP:TRANSPARENT');
+  // ---- the due date ----
+  const dueSummary = isBirthday
+    ? `🎂 ${what}`
+    : overdue
+      ? `⚠ OVERDUE · ${what}`
+      : `🔴 ${what}`;
 
-  leads.forEach((days) => {
-    lines.push('BEGIN:VALARM');
-    // A 0-day lead on an all-day birthday fires at 9am that morning rather
-    // than at midnight.
-    if (days === 0) lines.push(isBirthday ? 'TRIGGER;RELATED=START:PT9H' : 'TRIGGER:PT0S');
-    else lines.push(`TRIGGER:-P${days}D`);
-    lines.push('ACTION:DISPLAY');
-    const when = days === 0 ? 'today' : `in ${days} day${days === 1 ? '' : 's'}`;
-    const what = isBirthday ? mask(m.label) : `${name}: ${m.label}`;
-    lines.push(`DESCRIPTION:${esc(`${what} — ${when}${recurrenceNote[m.recurrence] || ''}`)}`);
-    lines.push('END:VALARM');
-  });
+  out.push(...vevent({
+    uid: `${baseUid}@duedates`,
+    date: m.date,
+    summary: dueSummary,
+    body: detailLines.join('\n'),
+    rrule,
+    // When the heads-up entries are carrying the advance warnings, the due date
+    // only needs to speak for itself; otherwise it carries every lead time as a
+    // notification, which is the behaviour without visible warnings.
+    alarms: headsUp
+      ? [{ text: `${what} — due today${recurrenceNote[m.recurrence] || ''}` }]
+      : leads.map((d) => ({
+          daysBefore: d,
+          text: `${what} — ${d === 0 ? 'due today' : `due in ${d} day${d === 1 ? '' : 's'}`}${recurrenceNote[m.recurrence] || ''}`,
+        })),
+    category,
+    color: isBirthday ? undefined : 'red',
+  }));
 
-  lines.push('END:VEVENT');
-  return lines;
+  return out;
 }
 
 const nextDay = (ymd) => {
@@ -160,7 +225,7 @@ export function countPastDates(clients, { categories = null } = {}) {
  * One .ics for one client — this is the per-client calendar.
  * `options.categories` limits which milestone categories are included.
  */
-export function buildClientIcs(client, { leadTimes = DEFAULT_LEAD_TIMES, categories = null, nameStyle = 'full', skipPast = false } = {}) {
+export function buildClientIcs(client, { leadTimes = DEFAULT_LEAD_TIMES, categories = null, nameStyle = 'full', skipPast = false, headsUp = true } = {}) {
   const name = displayName(client, nameStyle);
   const schedule = getClientSchedule(client)
     .filter((m) => !categories || categories.includes(m.category))
@@ -175,14 +240,19 @@ export function buildClientIcs(client, { leadTimes = DEFAULT_LEAD_TIMES, categor
     `X-WR-CALNAME:${esc(`${name} — Due Dates`)}`,
     `X-WR-CALDESC:${esc(`Child First due dates and reminders for ${name}.`)}`,
   ];
-  schedule.forEach((m) => lines.push(...eventLines(client, m, leadTimes, nameStyle)));
+  let count = 0;
+  schedule.forEach((m) => {
+    const events = milestoneEvents(client, m, leadTimes, nameStyle, headsUp, skipPast);
+    count += events.filter((l) => l === 'BEGIN:VEVENT').length;
+    lines.push(...events);
+  });
   lines.push('END:VCALENDAR');
 
-  return { ics: lines.map(fold).join('\r\n') + '\r\n', count: schedule.length };
+  return { ics: lines.map(fold).join('\r\n') + '\r\n', count, dueCount: schedule.length };
 }
 
 /** One .ics holding every client — handy for a single "everything" calendar. */
-export function buildCaseloadIcs(clients, { leadTimes = DEFAULT_LEAD_TIMES, categories = null, nameStyle = 'full', skipPast = false } = {}) {
+export function buildCaseloadIcs(clients, { leadTimes = DEFAULT_LEAD_TIMES, categories = null, nameStyle = 'full', skipPast = false, headsUp = true } = {}) {
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
@@ -196,7 +266,11 @@ export function buildCaseloadIcs(clients, { leadTimes = DEFAULT_LEAD_TIMES, cate
     getClientSchedule(client)
       .filter((m) => !categories || categories.includes(m.category))
       .filter((m) => keepMilestone(m, skipPast))
-      .forEach((m) => { count++; lines.push(...eventLines(client, m, leadTimes, nameStyle)); });
+      .forEach((m) => {
+        const events = milestoneEvents(client, m, leadTimes, nameStyle, headsUp, skipPast);
+        count += events.filter((l) => l === 'BEGIN:VEVENT').length;
+        lines.push(...events);
+      });
   });
   lines.push('END:VCALENDAR');
   return { ics: lines.map(fold).join('\r\n') + '\r\n', count };

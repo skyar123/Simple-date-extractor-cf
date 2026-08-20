@@ -69,6 +69,7 @@ export default function App() {
   const [categories, setCategories] = useState(CATEGORY_ORDER);
   const [nameStyle, setNameStyle] = useState('full');
   const [skipPast, setSkipPast] = useState(true);
+  const [headsUp, setHeadsUp] = useState(true);
   const [tab, setTab] = useState('clients');
   const [loaded, setLoaded] = useState(false);
   const [toast, setToast] = useState('');
@@ -84,6 +85,7 @@ export default function App() {
         if (Array.isArray(saved.categories) && saved.categories.length) setCategories(saved.categories);
         if (saved.nameStyle) setNameStyle(saved.nameStyle);
         if (typeof saved.skipPast === 'boolean') setSkipPast(saved.skipPast);
+        if (typeof saved.headsUp === 'boolean') setHeadsUp(saved.headsUp);
       }
     } catch {
       /* corrupt or unavailable storage — start clean rather than blocking the app */
@@ -94,18 +96,18 @@ export default function App() {
   useEffect(() => {
     if (!loaded) return;
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ clients, leadTimes, categories, nameStyle, skipPast }));
+      localStorage.setItem(STORE_KEY, JSON.stringify({ clients, leadTimes, categories, nameStyle, skipPast, headsUp }));
     } catch {
       /* private mode / quota — the export buttons still work */
     }
-  }, [clients, leadTimes, categories, nameStyle, skipPast, loaded]);
+  }, [clients, leadTimes, categories, nameStyle, skipPast, headsUp, loaded]);
 
   const say = (message) => {
     setToast(message);
     setTimeout(() => setToast((t) => (t === message ? '' : t)), 3200);
   };
 
-  const exportOpts = { leadTimes, categories, nameStyle, skipPast };
+  const exportOpts = { leadTimes, categories, nameStyle, skipPast, headsUp };
 
   // ---- exports ----
   const exportClient = (client) => {
@@ -133,7 +135,7 @@ export default function App() {
   };
 
   const backup = () => {
-    downloadText(JSON.stringify({ version: 1, savedAt: new Date().toISOString(), clients, leadTimes, categories, nameStyle, skipPast }, null, 2),
+    downloadText(JSON.stringify({ version: 1, savedAt: new Date().toISOString(), clients, leadTimes, categories, nameStyle, skipPast, headsUp }, null, 2),
       `due-dates-backup-${todayISO()}.json`, 'application/json');
     say('Backup saved.');
   };
@@ -149,6 +151,7 @@ export default function App() {
         if (Array.isArray(data.categories) && data.categories.length) setCategories(data.categories);
         if (data.nameStyle) setNameStyle(data.nameStyle);
         if (typeof data.skipPast === 'boolean') setSkipPast(data.skipPast);
+        if (typeof data.headsUp === 'boolean') setHeadsUp(data.headsUp);
         say(`Restored ${data.clients.length} client${data.clients.length === 1 ? '' : 's'}.`);
       } catch {
         say('That file did not look like a Due Dates backup.');
@@ -211,6 +214,7 @@ export default function App() {
             categories={categories} setCategories={setCategories}
             nameStyle={nameStyle} setNameStyle={setNameStyle}
             skipPast={skipPast} setSkipPast={setSkipPast}
+            headsUp={headsUp} setHeadsUp={setHeadsUp}
             exportClient={exportClient} exportAllCombined={exportAllCombined}
             exportAllZipped={exportAllZipped} backup={backup} restore={restore}
           />
@@ -591,6 +595,7 @@ function MilestoneRow({ client, m }) {
       <div className="min-w-0 flex-1">
         <div className="sched-label">
           {m.category === 'birthday' && <Cake size={13} />} {m.label}
+          {m.turning ? <span className="turning"> · turns {m.turning}</span> : null}
         </div>
         <div className="sched-meta">
           <span className={'pill pill-' + m.category}>{CATEGORY_LABELS[m.category]}</span>
@@ -678,6 +683,7 @@ function UpcomingRow({ m }) {
         <div className="up-label">
           {m.category === 'birthday' && <Cake size={13} />}
           <strong>{m.client.name}</strong> — {m.label}
+          {m.turning ? <span className="turning"> · turns {m.turning}</span> : null}
         </div>
         <div className="sched-meta">
           <span className={'pill pill-' + m.category}>{CATEGORY_LABELS[m.category]}</span>
@@ -694,14 +700,14 @@ function UpcomingRow({ m }) {
 
 function ExportTab({
   clients, leadTimes, setLeadTimes, categories, setCategories,
-  nameStyle, setNameStyle, skipPast, setSkipPast,
+  nameStyle, setNameStyle, skipPast, setSkipPast, headsUp, setHeadsUp,
   exportClient, exportAllCombined, exportAllZipped, backup, restore,
 }) {
   const fileRef = useRef(null);
-  const total = useMemo(
-    () => clients.reduce((n, c) => n + buildClientIcs(c, { categories, skipPast }).count, 0),
-    [clients, categories, skipPast]
-  );
+  const { total, dues } = useMemo(() => clients.reduce((acc, c) => {
+    const built = buildClientIcs(c, { categories, skipPast, headsUp, leadTimes });
+    return { total: acc.total + built.count, dues: acc.dues + built.dueCount };
+  }, { total: 0, dues: 0 }), [clients, categories, skipPast, headsUp, leadTimes]);
   const pastCount = useMemo(() => countPastDates(clients, { categories }), [clients, categories]);
 
   return (
@@ -710,7 +716,9 @@ function ExportTab({
         <div className="card-title"><Download size={16} /> Download calendars</div>
         <p className="hint">
           {clients.length
-            ? `${total} date${total === 1 ? '' : 's'} across ${clients.length} client${clients.length === 1 ? '' : 's'}, with reminders built in.`
+            ? headsUp
+              ? `${dues} deadline${dues === 1 ? '' : 's'} across ${clients.length} client${clients.length === 1 ? '' : 's'}, plus ${total - dues} advance warnings — ${total} entries in all.`
+              : `${dues} deadline${dues === 1 ? '' : 's'} across ${clients.length} client${clients.length === 1 ? '' : 's'}, with reminders built in.`
             : 'Add clients first.'}
         </p>
         <div className="flex gap-2 flex-wrap mt-3">
@@ -721,6 +729,19 @@ function ExportTab({
             <CalendarDays size={16} /> Everything in one .ics
           </button>
         </div>
+
+        <label className="heads-up mt-4">
+          <input type="checkbox" checked={headsUp} onChange={(e) => setHeadsUp(e.target.checked)} />
+          <span>
+            <strong>Put the advance warnings on the calendar, not just in a notification.</strong>
+            <br />
+            Each reminder lead time becomes its own all-day entry that many days earlier —
+            <em> ⏳ 30 days · 6-month reassessment due</em> — so you can see what is coming
+            while you plan the week. The due date itself reads <em>🔴</em>, and anything
+            already past reads <em>⚠ OVERDUE</em>. Turn this off to go back to a single
+            entry per deadline with pop-up reminders only.
+          </span>
+        </label>
 
         {pastCount > 0 && (
           <label className="skip-past mt-4">
@@ -1009,9 +1030,14 @@ code { background:#F1EFE6; border-radius:5px; padding:1px 5px; font-size:12.5px;
 .seg:hover { border-color:#CBDDCE; color:var(--ink); }
 .seg-on { background:var(--pine); border-color:var(--pine); color:#fff; }
 .seg-on:hover { background:var(--pine-deep); color:#fff; }
+.heads-up { display:flex; align-items:flex-start; gap:9px; background:var(--frp); border:1px solid #CBDDCE; border-radius:14px; padding:12px 14px; font-size:12.5px; line-height:1.5; color:var(--pine); cursor:pointer; }
+.heads-up input { width:16px; height:16px; margin-top:1px; flex-shrink:0; accent-color:var(--pine); }
+.heads-up strong { font-size:13.5px; color:var(--pine-deep); }
+.heads-up em { font-style:normal; font-weight:600; background:#fff; border-radius:5px; padding:0 4px; }
 .skip-past { display:flex; align-items:flex-start; gap:9px; background:var(--marigold-soft); border:1px solid #EFD9B4; border-radius:14px; padding:12px 14px; font-size:12.5px; line-height:1.5; color:#6E5424; cursor:pointer; }
 .skip-past input { width:16px; height:16px; margin-top:1px; flex-shrink:0; accent-color:var(--pine); }
 .skip-past strong { font-size:13.5px; color:#5A4318; }
+.turning { color:var(--ink-soft); font-weight:500; }
 .preview-line { font-size:12.5px; color:var(--ink-soft); background:#F7F5EE; border-radius:10px; padding:8px 10px; }
 .preview-line strong { color:var(--ink); font-weight:600; }
 .dupe-tag { display:inline-block; font-size:10.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:#2C4A73; background:#E7EEF8; border-radius:999px; padding:2px 8px; margin-bottom:6px; }

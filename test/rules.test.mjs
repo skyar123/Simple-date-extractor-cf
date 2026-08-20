@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import {
-  addDays, addMonths, formatAge, getClientSchedule, getIssues, getUpcoming, parseDate, toISODate,
+  addDays, addMonths, formatAge, formatDate, getClientSchedule, getIssues, getUpcoming, parseDate, toISODate,
 } from '../src/rules.js';
 import { findDates, findDeclaredCount, parseCaseload } from '../src/parse.js';
 import { buildCaseloadIcs, buildClientIcs, buildZip, countPastDates, displayName, googleCalendarUrl, slug } from '../src/ics.js';
@@ -89,6 +89,12 @@ test('age windows past the end of service are left off', () => {
   // Born 2024-04-12: ASQ-3 ages out in Oct 2029, long after this family closes.
   assert.equal(find('age-asq-out'), undefined);
   assert.equal(find('age-se-switch'), undefined);
+});
+
+test('a recurring birthday never bakes in an age that will go stale', () => {
+  const label = find('bday-child').label;
+  assert.ok(!/turns|\d/.test(label), `the label must carry no age: ${label}`);
+  assert.ok(find('bday-child').turning > 0, 'the age is carried separately for the app');
 });
 
 test('birthdays resolve to the next occurrence and repeat yearly', () => {
@@ -225,17 +231,24 @@ test('every line is CRLF-terminated and folded under the 75-octet limit', () => 
   ics.split('\r\n').forEach((line) => assert.ok(line.length <= 75, `line too long: ${line.slice(0, 40)}…`));
 });
 
-test('birthdays carry a one-week reminder and repeat yearly', () => {
-  const event = ics.split('BEGIN:VEVENT').find((b) => b.includes('turns'));
-  assert.ok(event.includes('RRULE:FREQ=YEARLY'));
-  assert.ok(event.includes('TRIGGER:-P7D'));
-  assert.ok(event.includes('DTSTART;VALUE=DATE:'), 'a birthday should be an all-day event');
+test('birthdays repeat yearly and are all-day', () => {
+  const events = ics.split('BEGIN:VEVENT').filter((b) => b.includes('— birthday'));
+  // Child and caregiver birthdays, each with its heads-up entry and the day itself.
+  assert.equal(events.length, 4);
+  events.forEach((e) => {
+    assert.ok(e.includes('RRULE:FREQ=YEARLY'));
+    assert.ok(e.includes('DTSTART;VALUE=DATE:'), 'a birthday should be an all-day event');
+  });
 });
 
-test('the 6-month reassessment carries a one-month reminder', () => {
-  const event = ics.split('BEGIN:VEVENT').find((b) => b.includes('6-month reassessment'));
-  assert.ok(event.includes('TRIGGER:-P30D'));
-  assert.ok(event.includes('TRIGGER:-P7D'));
+test('without heads-up entries the lead times ride as 9am notifications', () => {
+  const quiet = buildClientIcs(client, { headsUp: false }).ics;
+  const event = quiet.split('BEGIN:VEVENT').find((b) => b.includes('6-month reassessment'));
+  assert.ok(event.includes('TRIGGER:-PT711H'), '30 days ahead at 9am');
+  assert.ok(event.includes('TRIGGER:-PT159H'), '7 days ahead at 9am');
+  assert.ok(event.includes('TRIGGER:-PT15H'), '1 day ahead at 9am');
+  assert.equal(quiet.split('BEGIN:VEVENT').length - 1, buildClientIcs(client).dueCount,
+    'notification-only means one entry per deadline');
 });
 
 // Reverse the RFC 5545 folding so a whole property can be inspected.
@@ -250,15 +263,18 @@ test('commas and newlines in descriptions are escaped', () => {
   assert.equal(desc.split('\r\n').length, 1, 'a description must be one logical line');
 });
 
-test('reminder lead times can be overridden', () => {
+test('reminder lead times drive both the entries and the notifications', () => {
   const custom = buildClientIcs(client, { leadTimes: { birthday: [3], sixMonth: [45] } });
-  assert.ok(custom.ics.includes('TRIGGER:-P3D'));
-  assert.ok(custom.ics.includes('TRIGGER:-P45D'));
+  assert.ok(custom.ics.includes('⏳ 45 days'), 'a 45-day heads-up entry');
+  assert.ok(custom.ics.includes('🎂 In 3 days'), 'a 3-day birthday heads-up entry');
+  const quiet = buildClientIcs(client, { headsUp: false, leadTimes: { sixMonth: [45] } });
+  assert.ok(quiet.ics.includes('TRIGGER:-PT1071H'), '45 days ahead at 9am');
 });
 
 test('categories can be filtered out of the export', () => {
   const only = buildClientIcs(client, { categories: ['birthday'] });
-  assert.equal(only.count, 2);
+  assert.equal(only.dueCount, 2, 'two birthdays');
+  assert.equal(only.count, 4, 'each birthday brings its one-week heads-up');
   assert.ok(!only.ics.includes('SNIFF'));
 });
 
@@ -362,7 +378,7 @@ test('initials mode keeps full names out of the calendar entirely', () => {
   assert.ok(!masked.includes('Dana'), 'the caregiver name leaked');
   assert.ok(masked.includes('R.D.V.'));
   // The birthday summary is composed upstream in rules.js, so check it too.
-  const bday = masked.split('BEGIN:VEVENT').find((b) => b.includes('turns'));
+  const bday = masked.split('BEGIN:VEVENT').find((b) => b.includes('birthday'));
   assert.ok(!bday.includes('Rowan'), 'the birthday label leaked the full name');
 });
 
@@ -384,18 +400,98 @@ test('skipPast drops one-time dates behind us but keeps recurring ones', () => {
   assert.ok(ahead.ics.includes('RRULE:FREQ=YEARLY'), 'the birthday must survive');
   assert.ok(ahead.ics.includes('RRULE:FREQ=DAILY;INTERVAL=90'), 'the SNIFF must survive');
   assert.ok(!ahead.ics.includes('OVERDUE'), 'nothing left should be overdue');
-  assert.equal(countPastDates([old]), all.count - ahead.count);
+  assert.equal(countPastDates([old]), all.dueCount - ahead.dueCount);
 });
 
 test('skipPast leaves a brand-new client untouched', () => {
   const fresh = { id: 'f', name: 'New Case', dob: '2024-02-02', intakeDate: toISODate(new Date()) };
   assert.equal(buildClientIcs(fresh, { skipPast: true }).count, buildClientIcs(fresh).count);
+  assert.equal(buildClientIcs(fresh, { skipPast: true }).dueCount, buildClientIcs(fresh).dueCount);
   assert.equal(countPastDates([fresh]), 0);
 });
 
 test('skipPast is off unless asked for', () => {
   const old = { id: 'o2', name: 'Old', dob: '2021-05-04', intakeDate: addDays(toISODate(new Date()), -365) };
   assert.equal(buildClientIcs(old).count, buildClientIcs(old, { skipPast: false }).count);
+});
+
+
+// ---- advance warnings you can actually see ---------------------------------
+
+test('each lead time becomes its own entry, that many days earlier', () => {
+  // Intake far enough out that nothing is past and nothing gets skipped.
+  const soon = { id: 'w', name: 'Wren F', dob: '2023-03-03', intakeDate: addDays(toISODate(new Date()), 30) };
+  const { ics: out } = buildClientIcs(soon);
+  const due = addDays(soon.intakeDate, 180);            // the 6-month
+  const blocks = out.split('BEGIN:VEVENT').filter((b) => b.includes('6-month reassessment'));
+  assert.equal(blocks.length, 4, '30/7/1-day warnings plus the due date');
+
+  const startOf = (b) => (b.match(/DTSTART;VALUE=DATE:(\d{8})/) || [])[1];
+  const dates = blocks.map(startOf).sort();
+  assert.deepEqual(dates, [
+    addDays(due, -30), addDays(due, -7), addDays(due, -1), due,
+  ].map((d) => d.replace(/-/g, '')).sort());
+});
+
+test('a warning entry says how many days are left, and the due day says today', () => {
+  const soon = { id: 'w2', name: 'Wren F', dob: '2023-03-03', intakeDate: addDays(toISODate(new Date()), 30) };
+  const out = buildClientIcs(soon).ics.replace(/\r\n /g, '');
+  assert.ok(out.includes('SUMMARY:⏳ 30 days · Wren F — 6-month reassessment due'));
+  assert.ok(out.includes('SUMMARY:⏳ 7 days · Wren F — 6-month reassessment due'));
+  assert.ok(out.includes('SUMMARY:⏳ 1 day · Wren F — 6-month reassessment due'), 'singular for one day');
+  assert.ok(out.includes('SUMMARY:🔴 Wren F — 6-month reassessment due'));
+});
+
+const escComma = (s) => s.replace(/,/g, '\\,');
+
+test('a warning entry names the date it is warning about', () => {
+  const soon = { id: 'w3', name: 'Wren F', dob: '2023-03-03', intakeDate: addDays(toISODate(new Date()), 30) };
+  const out = buildClientIcs(soon).ics.replace(/\r\n /g, '');
+  const lead = out.split('BEGIN:VEVENT').find((b) => b.includes('⏳ 30 days') && b.includes('6-month'));
+  const due = addDays(soon.intakeDate, 180);
+  assert.ok(lead.includes(escComma(formatDate(due, 'full'))), 'the description carries the real due date');
+  assert.ok(lead.includes('30 days from this entry'));
+});
+
+test('warnings and the due date stay separate events, never merged on re-import', () => {
+  const soon = { id: 'w4', name: 'Wren F', dob: '2023-03-03', intakeDate: addDays(toISODate(new Date()), 30) };
+  const uids = buildClientIcs(soon).ics.replace(/\r\n /g, '').split('\r\n')
+    .filter((l) => l.startsWith('UID:'));
+  assert.equal(new Set(uids).size, uids.length, 'every entry needs its own UID');
+  assert.ok(uids.some((u) => /-lead30@/.test(u)));
+  assert.ok(uids.some((u) => /-lead7@/.test(u)));
+});
+
+test('a recurring deadline carries its warning forward too', () => {
+  const soon = { id: 'w5', name: 'Wren F', dob: '2023-03-03', intakeDate: addDays(toISODate(new Date()), 30) };
+  const blocks = buildClientIcs(soon).ics.replace(/\r\n /g, '').split('BEGIN:VEVENT')
+    .filter((b) => /SUMMARY:[^\r\n]*SNIFF update due/.test(b));
+  assert.ok(blocks.length >= 2);
+  blocks.forEach((b) => assert.ok(b.includes('INTERVAL=90'), 'the warning recurs with the deadline'));
+});
+
+test('a warning whose own day has already passed is dropped with skipPast', () => {
+  // Due in 3 days: the 30- and 7-day warnings are behind us, the 1-day is not.
+  const c3 = { id: 'w6', name: 'Wren F', dob: '2023-03-03', intakeDate: addDays(toISODate(new Date()), 3 - 180) };
+  const kept = buildClientIcs(c3, { skipPast: true }).ics;
+  const six = kept.split('BEGIN:VEVENT').filter((b) => b.includes('6-month reassessment'));
+  assert.equal(six.length, 2, 'only the 1-day warning and the due date remain');
+  assert.ok(six.some((b) => b.includes('⏳ 1 day')));
+  assert.ok(!six.some((b) => b.includes('⏳ 30 days')), 'the 30-day warning is behind us');
+  assert.ok(!six.some((b) => b.includes('⏳ 7 days')), 'so is the 7-day one');
+});
+
+test('headsUp can be switched off entirely', () => {
+  const quiet = buildClientIcs(client, { headsUp: false });
+  assert.ok(!quiet.ics.includes('⏳'), 'no countdown entries');
+  assert.ok(quiet.ics.includes('🔴'), 'the due date is still marked');
+  assert.equal(quiet.count, quiet.dueCount, 'one entry per deadline');
+});
+
+test('every entry is all-day so a week of warnings reads at a glance', () => {
+  const out = buildClientIcs(client).ics;
+  assert.ok(!out.includes('DTSTART:'), 'no timed events remain');
+  assert.equal((out.match(/DTSTART;VALUE=DATE:/g) || []).length, buildClientIcs(client).count);
 });
 
 if (!process.exitCode) console.log(`✓ ${passed} tests passed`);
