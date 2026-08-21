@@ -121,18 +121,66 @@ onto a lock screen. This renders every event as `R.D.V. — 6-month reassessment
 due` instead of the child's full name, filenames included, while keeping every
 date intact. Your full list stays in this browser either way.
 
+## Choosing what goes in
+
+Nothing has to go into the calendar just because it was worked out.
+
+**Per deadline.** Every row in a client's schedule has a tick box. Untick the
+ones that are handled — a baseline you already completed — and they drop out of
+every export, along with their advance warnings, so no orphan countdown is left
+pointing at a deadline that is not there. Unticked rows stay visible, greyed and
+struck through, so they can be switched back on.
+
+**"Caught up".** One button per client unticks everything already past, for when
+a family is current and only what is ahead matters. It says how many it will
+drop before you press it.
+
+**Per client.** The export screen lists everyone with a tick box and their entry
+count. Unticking leaves that client out of the batch downloads while still
+letting you grab them individually.
+
+All of it is remembered between visits.
+
 ## Getting the calendars into Google
 
-1. **Export → One file per client (.zip)**, or download a single client at a time.
-2. In Google Calendar, open **Settings → Import & export**.
-3. Choose one `.ics`, pick which calendar it goes into, press **Import**.
+Two ways, both one import each:
 
-Doing it once per client file gives each family its own calendar you can toggle
-on and off. Apple Calendar takes the same file through File → Import; Outlook
-through File → Open & Export → Import an iCalendar (.ics).
+**One file, all clients** — a single `.ics` named
+`child-first-caseload-15-clients-2026-08-20.ics`, arriving as
+*Child First — Caseload Due Dates (15 clients)*. One import into your work
+calendar and everything is there. Start here.
+
+**Separate file per client** — a `.zip` with one `.ics` each. More imports, but
+each family lands in its own Google calendar, which you can toggle and
+colour-code individually. This is also the only way to get per-family colours,
+since Google colours by calendar and ignores per-event colour on import.
+
+Either way: Google Calendar → **Settings → Import & export** → choose the file →
+pick the destination calendar → **Import**. Apple Calendar takes the same file
+through File → Import; Outlook through File → Open & Export → Import an
+iCalendar (.ics).
 
 Re-importing after you fix a date updates the matching events in place rather
 than doubling them up, because each event keeps a stable UID.
+
+## Do I need a Google API key?
+
+No. Importing an `.ics` needs no account, no API, no setup — which is why the app
+works this way.
+
+An API would buy one thing: the app writing to your Google Calendar directly, so
+a change here updates there without re-importing. It costs a Google Cloud
+project, an OAuth consent screen, a client ID, and re-consent every so often for
+an unverified app. It also means caseload deadlines leaving this browser and
+travelling to Google under your work account — worth a conversation with whoever
+owns data handling at RHA before doing it, not a switch to flip quietly.
+
+A subscribed calendar (a `webcal:` feed Google re-reads on its own) is the other
+option and has the same trade: it needs the data hosted somewhere Google can
+reach it, and Google only refreshes external feeds every 8–24 hours.
+
+Re-importing takes about ten seconds and updates entries in place, so the file
+route is genuinely the better deal until re-importing becomes the annoying part.
 
 ## Where the data lives
 
@@ -146,7 +194,7 @@ doing before you clear site data.
 npm install
 npm run dev      # local dev server
 npm run build    # production build into dist/
-npm test         # 60 checks over the date math, the parser, and the .ics output
+npm test         # 66 checks over the date math, the parser, and the .ics output
 ```
 
 Deploy on Netlify by connecting this repository directly — `netlify.toml` at

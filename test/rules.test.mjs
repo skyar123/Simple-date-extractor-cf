@@ -494,4 +494,55 @@ test('every entry is all-day so a week of warnings reads at a glance', () => {
   assert.equal((out.match(/DTSTART;VALUE=DATE:/g) || []).length, buildClientIcs(client).count);
 });
 
+
+// ---- switching entries and clients off -------------------------------------
+
+test('an unticked deadline is left out of the export', () => {
+  const off = { ...client, excluded: { 'six-month': true } };
+  const all = buildClientIcs(client);
+  const less = buildClientIcs(off);
+  assert.ok(!less.ics.includes('6-month reassessment'), 'the deadline is gone');
+  assert.ok(less.dueCount < all.dueCount);
+  assert.ok(less.ics.includes('SNIFF'), 'everything else stays');
+});
+
+test('unticking removes the deadline and its warnings together', () => {
+  const soon = { id: 'x1', name: 'Wren F', dob: '2023-03-03', intakeDate: addDays(toISODate(new Date()), 30) };
+  const off = { ...soon, excluded: { 'six-month': true } };
+  assert.ok(!buildClientIcs(off).ics.includes('6-month reassessment'),
+    'no orphan ⏳ warning is left pointing at a deadline that is not there');
+});
+
+test('a client switched off drops out of the combined file only', () => {
+  const a = { ...client, id: 'a', name: 'Client A' };
+  const b = { ...client, id: 'b', name: 'Client B', skip: true };
+  const both = buildCaseloadIcs([a, b]);
+  assert.ok(both.ics.includes('Client A'));
+  assert.ok(!both.ics.includes('Client B'));
+  // Asking for that client directly still works — skip is about the batch.
+  assert.ok(buildClientIcs(b).ics.includes('Client B'));
+});
+
+test('the combined calendar names itself for the caseload', () => {
+  const two = buildCaseloadIcs([{ ...client, id: 'a' }, { ...client, id: 'b' }]).ics.replace(/\r\n /g, '');
+  assert.ok(two.includes('X-WR-CALNAME:Child First — Caseload Due Dates (2 clients)'));
+  assert.ok(two.includes('X-WR-CALDESC:'));
+});
+
+test('excluding everything yields an empty but still valid calendar', () => {
+  const none = { ...client, excluded: Object.fromEntries(getClientSchedule(client).map((m) => [m.id, true])) };
+  const built = buildClientIcs(none);
+  assert.equal(built.count, 0);
+  assert.ok(built.ics.startsWith('BEGIN:VCALENDAR'));
+  assert.ok(built.ics.trimEnd().endsWith('END:VCALENDAR'));
+  assert.ok(!built.ics.includes('BEGIN:VEVENT'));
+});
+
+test('countPastDates ignores deadlines already switched off', () => {
+  const old = { id: 'p1', name: 'Old', dob: '2021-05-04', intakeDate: addDays(toISODate(new Date()), -365) };
+  const before = countPastDates([old]);
+  const after = countPastDates([{ ...old, excluded: { baseline: true } }]);
+  assert.equal(after, before - 1);
+});
+
 if (!process.exitCode) console.log(`✓ ${passed} tests passed`);

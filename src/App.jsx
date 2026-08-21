@@ -120,8 +120,8 @@ export default function App() {
   const exportAllCombined = () => {
     const { ics, count } = buildCaseloadIcs(clients, exportOpts);
     if (!count) return say('No dates to export yet.');
-    downloadText(ics, `child-first-due-dates-${todayISO()}.ics`);
-    say(`${count} dates exported in one calendar.`);
+    downloadText(ics, `child-first-caseload-${clients.filter((c) => !c.skip).length}-clients-${todayISO()}.ics`);
+    say(`${count} entries exported in one calendar.`);
   };
 
   const exportAllZipped = () => {
@@ -210,7 +210,7 @@ export default function App() {
 
         {tab === 'export' && (
           <ExportTab
-            clients={clients} leadTimes={leadTimes} setLeadTimes={setLeadTimes}
+            clients={clients} setClients={setClients} leadTimes={leadTimes} setLeadTimes={setLeadTimes}
             categories={categories} setCategories={setCategories}
             nameStyle={nameStyle} setNameStyle={setNameStyle}
             skipPast={skipPast} setSkipPast={setSkipPast}
@@ -498,6 +498,19 @@ function ClientCard({ client, categories, onChange, onRemove, onExport }) {
   const issues = getIssues(client);
   const rel = next ? getRelativeDue(next.date) : null;
 
+  // Which of this client's deadlines are switched off. Ticking one off means
+  // "this is handled — keep it out of my calendar"; the deadline still shows
+  // here, greyed, so it can be switched back on.
+  const setExcluded = (excluded) => onChange({ excluded });
+  const toggleOne = (id) => setExcluded({ ...(client.excluded || {}), [id]: !client.excluded?.[id] });
+  const included = schedule.filter((m) => !client.excluded?.[m.id]).length;
+  const allOff = Object.fromEntries(schedule.map((m) => [m.id, true]));
+  // "Caught up" drops everything already past — the baselines and reviews a
+  // family months into service has behind them — and leaves what is still ahead.
+  const past = schedule.filter((m) => !m.recurrence && m.date < todayISO());
+  const pastDue = past.length;
+  const pastOff = { ...(client.excluded || {}), ...Object.fromEntries(past.map((m) => [m.id, true])) };
+
   return (
     <div className={'card client-card mt-3 ' + (open ? 'card-open' : '')}>
       <div className="case-row">
@@ -571,10 +584,29 @@ function ClientCard({ client, categories, onChange, onRemove, onExport }) {
             </button>
           </div>
 
+          {schedule.length > 0 && (
+            <div className="bulk mt-3">
+              <span className="bulk-count">
+                {included} of {schedule.length} going to the calendar
+              </span>
+              <div className="bulk-actions">
+                <button className="mini" onClick={() => setExcluded({})}>All</button>
+                <button className="mini" onClick={() => setExcluded(allOff)}>None</button>
+                <button className="mini mini-strong" onClick={() => setExcluded(pastOff)} disabled={!pastDue}>
+                  {pastDue ? `Caught up (drop ${pastDue} past due)` : 'Nothing past due'}
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="sched">
             {schedule.length === 0 && <div className="hint mt-3">Add an intake date or a birthday to build a schedule.</div>}
             {schedule.map((m) => (
-              <MilestoneRow key={m.id} client={client} m={m} />
+              <MilestoneRow
+                key={m.id} client={client} m={m}
+                included={!client.excluded?.[m.id]}
+                onToggle={() => toggleOne(m.id)}
+              />
             ))}
           </div>
         </div>
@@ -583,11 +615,15 @@ function ClientCard({ client, categories, onChange, onRemove, onExport }) {
   );
 }
 
-function MilestoneRow({ client, m }) {
+function MilestoneRow({ client, m, included = true, onToggle }) {
   const rel = getRelativeDue(m.date);
   const [showItems, setShowItems] = useState(false);
   return (
-    <div className="sched-row">
+    <div className={'sched-row ' + (included ? '' : 'sched-off')}>
+      <input
+        type="checkbox" className="sched-check" checked={included} onChange={onToggle}
+        aria-label={`Include ${m.label} in the calendar`}
+      />
       <div className="sched-date">
         <div className="sched-day">{formatDate(m.date, 'day')}</div>
         <div className="sched-year">{parseDate(m.date)?.getFullYear()}</div>
@@ -699,34 +735,46 @@ function UpcomingRow({ m }) {
 // ---------------------------------------------------------------------------
 
 function ExportTab({
-  clients, leadTimes, setLeadTimes, categories, setCategories,
+  clients, setClients, leadTimes, setLeadTimes, categories, setCategories,
   nameStyle, setNameStyle, skipPast, setSkipPast, headsUp, setHeadsUp,
   exportClient, exportAllCombined, exportAllZipped, backup, restore,
 }) {
   const fileRef = useRef(null);
-  const { total, dues } = useMemo(() => clients.reduce((acc, c) => {
+  const on = useMemo(() => clients.filter((c) => !c.skip), [clients]);
+  const { total, dues } = useMemo(() => on.reduce((acc, c) => {
     const built = buildClientIcs(c, { categories, skipPast, headsUp, leadTimes });
     return { total: acc.total + built.count, dues: acc.dues + built.dueCount };
-  }, { total: 0, dues: 0 }), [clients, categories, skipPast, headsUp, leadTimes]);
-  const pastCount = useMemo(() => countPastDates(clients, { categories }), [clients, categories]);
+  }, { total: 0, dues: 0 }), [on, categories, skipPast, headsUp, leadTimes]);
+  const pastCount = useMemo(() => countPastDates(on, { categories }), [on, categories]);
+  const setSkip = (id, skip) => setClients((prev) => prev.map((c) => (c.id === id ? { ...c, skip } : c)));
 
   return (
     <section className="mt-5">
       <div className="card">
         <div className="card-title"><Download size={16} /> Download calendars</div>
         <p className="hint">
-          {clients.length
-            ? headsUp
-              ? `${dues} deadline${dues === 1 ? '' : 's'} across ${clients.length} client${clients.length === 1 ? '' : 's'}, plus ${total - dues} advance warnings — ${total} entries in all.`
-              : `${dues} deadline${dues === 1 ? '' : 's'} across ${clients.length} client${clients.length === 1 ? '' : 's'}, with reminders built in.`
-            : 'Add clients first.'}
+          {!clients.length
+            ? 'Add clients first.'
+            : !on.length
+              ? 'Every client is switched off below — tick at least one back on.'
+              : headsUp
+                ? `${dues} deadline${dues === 1 ? '' : 's'} across ${on.length} client${on.length === 1 ? '' : 's'}, plus ${total - dues} advance warnings — ${total} entries in all.`
+                : `${dues} deadline${dues === 1 ? '' : 's'} across ${on.length} client${on.length === 1 ? '' : 's'}, with reminders built in.`}
         </p>
-        <div className="flex gap-2 flex-wrap mt-3">
-          <button className="btn-primary" onClick={exportAllZipped} disabled={!clients.length}>
-            <Package size={16} /> One file per client (.zip)
+        <div className="export-choice mt-3">
+          <button className="big-btn" onClick={exportAllCombined} disabled={!on.length}>
+            <CalendarDays size={17} />
+            <span>
+              <strong>One file, all {on.length} client{on.length === 1 ? '' : 's'}</strong>
+              <em>A single import into your work calendar. Simplest — start here.</em>
+            </span>
           </button>
-          <button className="btn-ghost-solid" onClick={exportAllCombined} disabled={!clients.length}>
-            <CalendarDays size={16} /> Everything in one .ics
+          <button className="big-btn big-btn-quiet" onClick={exportAllZipped} disabled={!on.length}>
+            <Package size={17} />
+            <span>
+              <strong>Separate file per client (.zip)</strong>
+              <em>Import each into its own Google calendar so families can be toggled and colour-coded individually. {on.length} import{on.length === 1 ? '' : 's'}.</em>
+            </span>
           </button>
         </div>
 
@@ -787,12 +835,37 @@ function ExportTab({
 
         {clients.length > 0 && (
           <div className="per-client mt-4">
-            <div className="field-label">Or one at a time</div>
-            {clients.map((c) => (
-              <button key={c.id} className="chip-btn" onClick={() => exportClient(c)}>
-                <Download size={13} /> {c.name || 'Unnamed client'}
-              </button>
-            ))}
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="field-label" style={{ marginBottom: 0 }}>Who goes in</div>
+              <div className="bulk-actions">
+                <button className="mini" onClick={() => setClients((p) => p.map((c) => ({ ...c, skip: false })))}>All</button>
+                <button className="mini" onClick={() => setClients((p) => p.map((c) => ({ ...c, skip: true })))}>None</button>
+              </div>
+            </div>
+            <p className="hint mt-2">
+              Unticking leaves a client out of both downloads above. The arrow grabs
+              that one client on its own.
+            </p>
+            {clients.map((c) => {
+              const built = buildClientIcs(c, { categories, skipPast, headsUp, leadTimes });
+              return (
+                <div className={'pick-row ' + (c.skip ? 'pick-off' : '')} key={c.id}>
+                  <label className="pick-main">
+                    <input type="checkbox" checked={!c.skip} onChange={(e) => setSkip(c.id, !e.target.checked)} />
+                    <span className="min-w-0">
+                      <span className="pick-name">{c.name || 'Unnamed client'}</span>
+                      <span className="pick-meta">
+                        {built.dueCount} deadline{built.dueCount === 1 ? '' : 's'}
+                        {headsUp && built.count > built.dueCount ? ` · ${built.count - built.dueCount} warnings` : ''}
+                      </span>
+                    </span>
+                  </label>
+                  <button className="icon-btn" onClick={() => exportClient(c)} title={`Download just ${c.name || 'this client'}`}>
+                    <Download size={15} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -985,6 +1058,33 @@ code { background:#F1EFE6; border-radius:5px; padding:1px 5px; font-size:12.5px;
 .issue-info { background:#F1EFE6; color:var(--ink-soft); }
 
 .sched { margin-top:10px; border-top:1px solid var(--line); }
+.export-choice { display:flex; flex-direction:column; gap:9px; }
+.big-btn { display:flex; align-items:flex-start; gap:11px; text-align:left; background:var(--pine); color:#fff; border:1px solid var(--pine); border-radius:16px; padding:14px 16px; font-family:inherit; cursor:pointer; }
+.big-btn:hover { background:var(--pine-deep); }
+.big-btn:disabled { opacity:.4; cursor:default; }
+.big-btn svg { flex-shrink:0; margin-top:2px; }
+.big-btn strong { display:block; font-size:14.5px; font-weight:700; }
+.big-btn em { display:block; font-style:normal; font-size:12.5px; opacity:.85; margin-top:3px; line-height:1.45; }
+.big-btn-quiet { background:var(--card); color:var(--ink); border-color:var(--line); }
+.big-btn-quiet:hover { background:var(--paper); border-color:#CFC9B8; }
+.pick-row { display:flex; align-items:center; gap:8px; padding:7px 0; border-bottom:1px solid #F5F3EB; }
+.pick-row:last-child { border-bottom:none; }
+.pick-main { display:flex; align-items:center; gap:9px; flex:1; min-width:0; cursor:pointer; }
+.pick-main input { width:16px; height:16px; flex-shrink:0; accent-color:var(--pine); }
+.pick-name { display:block; font-size:14px; font-weight:600; }
+.pick-meta { display:block; font-size:11.5px; color:var(--ink-soft); }
+.pick-off { opacity:.45; }
+.pick-off .pick-name { text-decoration:line-through; }
+.sched-check { width:17px; height:17px; margin-top:11px; flex-shrink:0; accent-color:var(--pine); cursor:pointer; }
+.sched-off { opacity:.42; }
+.sched-off .sched-label { text-decoration:line-through; }
+.bulk { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; background:#F7F5EE; border-radius:12px; padding:8px 11px; }
+.bulk-count { font-size:12.5px; font-weight:600; color:var(--ink-soft); }
+.bulk-actions { display:flex; gap:6px; flex-wrap:wrap; }
+.mini { background:#fff; border:1px solid var(--line); border-radius:999px; padding:5px 11px; font-family:inherit; font-size:12px; font-weight:600; color:var(--ink); cursor:pointer; }
+.mini:hover { border-color:#CBDDCE; background:var(--frp); }
+.mini:disabled { opacity:.45; cursor:default; }
+.mini-strong { border-color:#CBDDCE; color:var(--pine); }
 .sched-row { display:flex; align-items:flex-start; gap:12px; padding:11px 0; border-bottom:1px solid #F0EDE3; }
 .sched-row:last-child { border-bottom:none; }
 .sched-date { width:74px; flex-shrink:0; }

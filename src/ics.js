@@ -213,11 +213,31 @@ const nextDay = (ymd) => {
 const keepMilestone = (m, skipPast) => !skipPast || !!m.recurrence || m.date >= todayISO();
 
 /**
+ * Has this particular deadline been switched off for this client? Ticking a row
+ * off in the app — "the baseline is done, don't put it in my calendar" — is
+ * recorded as `client.excluded[milestoneId]`, and nothing here second-guesses
+ * that: an unticked deadline is left out of every export.
+ */
+export const isExcluded = (client, m) => !!(client?.excluded && client.excluded[m.id]);
+
+/** A client switched off wholesale is left out of the combined export. */
+export const isClientOff = (client) => !!client?.skip;
+
+/** The deadlines that will actually be written for one client. */
+export function includedSchedule(client, { categories = null, skipPast = false } = {}) {
+  return getClientSchedule(client)
+    .filter((m) => !categories || categories.includes(m.category))
+    .filter((m) => keepMilestone(m, skipPast))
+    .filter((m) => !isExcluded(client, m));
+}
+
+/**
  * How many one-time dates a client has already passed — what `skipPast` drops.
  */
 export function countPastDates(clients, { categories = null } = {}) {
   return clients.reduce((n, c) => n + getClientSchedule(c)
-    .filter((m) => (!categories || categories.includes(m.category)) && !keepMilestone(m, true))
+    .filter((m) => (!categories || categories.includes(m.category)))
+    .filter((m) => !keepMilestone(m, true) && !isExcluded(c, m))
     .length, 0);
 }
 
@@ -227,9 +247,7 @@ export function countPastDates(clients, { categories = null } = {}) {
  */
 export function buildClientIcs(client, { leadTimes = DEFAULT_LEAD_TIMES, categories = null, nameStyle = 'full', skipPast = false, headsUp = true } = {}) {
   const name = displayName(client, nameStyle);
-  const schedule = getClientSchedule(client)
-    .filter((m) => !categories || categories.includes(m.category))
-    .filter((m) => keepMilestone(m, skipPast));
+  const schedule = includedSchedule(client, { categories, skipPast });
 
   const lines = [
     'BEGIN:VCALENDAR',
@@ -259,13 +277,12 @@ export function buildCaseloadIcs(clients, { leadTimes = DEFAULT_LEAD_TIMES, cate
     'PRODID:-//Child First//Due Dates//EN',
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
-    'X-WR-CALNAME:Child First — All Due Dates',
+    `X-WR-CALNAME:${esc(`Child First — Caseload Due Dates (${clients.filter((c) => !isClientOff(c)).length} clients)`)}`,
+    `X-WR-CALDESC:${esc(`Every Child First deadline and birthday reminder for the caseload, exported ${formatDate(todayISO(), 'full')}. Re-import after a change and matching entries update in place.`)}`,
   ];
   let count = 0;
-  clients.forEach((client) => {
-    getClientSchedule(client)
-      .filter((m) => !categories || categories.includes(m.category))
-      .filter((m) => keepMilestone(m, skipPast))
+  clients.filter((client) => !isClientOff(client)).forEach((client) => {
+    includedSchedule(client, { categories, skipPast })
       .forEach((m) => {
         const events = milestoneEvents(client, m, leadTimes, nameStyle, headsUp, skipPast);
         count += events.filter((l) => l === 'BEGIN:VEVENT').length;
