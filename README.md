@@ -116,10 +116,26 @@ scatters stale entries back through your calendar. This keeps the export
 forward-looking. Birthdays and the 90-day SNIFF are never dropped — their next
 occurrence is still ahead — and everything stays visible under *What's coming*.
 
-**Initials only.** A calendar file travels: onto a phone, into a synced account,
-onto a lock screen. This renders every event as `R.D.V. — 6-month reassessment
-due` instead of the child's full name, filenames included, while keeping every
-date intact. Your full list stays in this browser either way.
+**How clients are named** — three choices, and **initials is the default**.
+
+| Mode | An event reads | When |
+| --- | --- | --- |
+| **Initials** (default) | `R.D.V. — 6-month reassessment due` | Anything shared, anything on a phone |
+| **Nicknames** | `Sunflower — 6-month reassessment due` | A shared team calendar — far easier to read than initials |
+| **Full names** | `Rowan Delacroix Vance — 6-month…` | A private calendar only you see |
+
+A calendar file travels: onto a phone, into a synced account, onto a lock
+screen, in front of everyone the calendar is shared with. So the reduced modes
+are the starting point and full names are the deliberate exception.
+
+Nicknames are typed straight into the export list — one box per client, all in
+one place. **A client with no nickname falls back to initials, never to their
+full name**, so a blank box can't quietly reveal more than you asked for. The
+naming applies everywhere the name appears: event titles, the birthday labels,
+the caregiver line, and the downloaded filenames.
+
+Your full list stays in this browser regardless — the naming only affects what
+leaves in a calendar file.
 
 ## Choosing what goes in
 
@@ -154,6 +170,12 @@ calendar and everything is there. Start here.
 each family lands in its own Google calendar, which you can toggle and
 colour-code individually. This is also the only way to get per-family colours,
 since Google colours by calendar and ignores per-event colour on import.
+
+**Sharing with colleagues:** make a dedicated calendar ("CF Caseload — Due
+Dates"), share it with named people from its settings, and import into that one.
+Re-importing after a caseload change updates it for everyone at once — they are
+subscribed to the calendar, not to a file, so they do nothing. Use nicknames or
+initials for anything shared.
 
 Either way: Google Calendar → **Settings → Import & export** → choose the file →
 pick the destination calendar → **Import**. Apple Calendar takes the same file
@@ -194,7 +216,7 @@ doing before you clear site data.
 npm install
 npm run dev      # local dev server
 npm run build    # production build into dist/
-npm test         # 66 checks over the date math, the parser, and the .ics output
+npm test         # 69 checks over the date math, the parser, and the .ics output
 ```
 
 Deploy on Netlify by connecting this repository directly — `netlify.toml` at

@@ -215,7 +215,7 @@ test('lines with no date are reported instead of becoming empty clients', () => 
 
 // ---- calendar output -------------------------------------------------------
 
-const { ics, count } = buildClientIcs(client);
+const { ics, count } = buildClientIcs(client, { nameStyle: 'full' });
 
 test('the per-client calendar is a well-formed VCALENDAR', () => {
   assert.ok(ics.startsWith('BEGIN:VCALENDAR'));
@@ -279,7 +279,7 @@ test('categories can be filtered out of the export', () => {
 });
 
 test('the combined calendar holds every client', () => {
-  const two = buildCaseloadIcs([client, { ...client, id: 'c2', name: 'Theo W' }]);
+  const two = buildCaseloadIcs([client, { ...client, id: 'c2', name: 'Theo W' }], { nameStyle: 'full' });
   assert.ok(two.ics.includes('Ava R'));
   assert.ok(two.ics.includes('Theo W'));
   assert.equal(two.count, count * 2);
@@ -382,10 +382,45 @@ test('initials mode keeps full names out of the calendar entirely', () => {
   assert.ok(!bday.includes('Rowan'), 'the birthday label leaked the full name');
 });
 
-test('full-name mode is unchanged', () => {
+test('full names appear only when asked for', () => {
   const named = { ...client, name: 'Rowan Delacroix Vance' };
   assert.ok(buildClientIcs(named, { nameStyle: 'full' }).ics.includes('Rowan Delacroix Vance'));
-  assert.ok(buildClientIcs(named).ics.includes('Rowan Delacroix Vance'), 'full is the default');
+  assert.ok(!buildClientIcs(named).ics.includes('Rowan Delacroix Vance'),
+    'initials is the default — a full name is never the fallback');
+  assert.ok(buildClientIcs(named).ics.includes('R.D.V.'));
+});
+
+test('a nickname is used when there is one, initials when there is not', () => {
+  const named = { ...client, name: 'Rowan Delacroix Vance', nickname: 'Sunflower' };
+  const nick = buildClientIcs(named, { nameStyle: 'nickname' }).ics;
+  assert.ok(nick.includes('Sunflower'));
+  assert.ok(!nick.includes('Rowan'), 'the real name stays out');
+  assert.ok(!nick.includes('Delacroix'));
+  // No nickname set: fall back to initials, never to the full name.
+  const bare = { ...client, name: 'Rowan Delacroix Vance' };
+  const fallback = buildClientIcs(bare, { nameStyle: 'nickname' }).ics;
+  assert.ok(fallback.includes('R.D.V.'));
+  assert.ok(!fallback.includes('Rowan'), 'a missing nickname must not reveal the full name');
+});
+
+test('a nickname reaches the birthday label and the filename too', () => {
+  const named = { ...client, name: 'Rowan Delacroix Vance', nickname: 'Sunflower' };
+  const nick = buildClientIcs(named, { nameStyle: 'nickname' }).ics.replace(/\r\n /g, '');
+  const bday = nick.split('BEGIN:VEVENT').find((b) => b.includes('birthday'));
+  assert.ok(bday.includes('Sunflower'), 'the label composed upstream is rewritten too');
+  assert.ok(!bday.includes('Rowan'));
+  assert.equal(slug(displayName(named, 'nickname')), 'sunflower');
+});
+
+test('displayName covers all three modes', () => {
+  const c = { name: 'Rowan Delacroix Vance', nickname: 'Sunflower' };
+  assert.equal(displayName(c, 'full'), 'Rowan Delacroix Vance');
+  assert.equal(displayName(c, 'nickname'), 'Sunflower');
+  assert.equal(displayName(c, 'initials'), 'R.D.V.');
+  assert.equal(displayName(c), 'R.D.V.', 'initials is the default');
+  assert.equal(displayName({ name: 'Ann Lee' }, 'nickname'), 'A.L.', 'falls back to initials');
+  assert.equal(displayName({ nickname: 'Bluebird' }, 'initials'), 'Bluebird', 'nickname beats nothing');
+  assert.equal(displayName({}, 'full'), 'Client');
 });
 
 
@@ -421,7 +456,7 @@ test('skipPast is off unless asked for', () => {
 test('each lead time becomes its own entry, that many days earlier', () => {
   // Intake far enough out that nothing is past and nothing gets skipped.
   const soon = { id: 'w', name: 'Wren F', dob: '2023-03-03', intakeDate: addDays(toISODate(new Date()), 30) };
-  const { ics: out } = buildClientIcs(soon);
+  const { ics: out } = buildClientIcs(soon, { nameStyle: 'full' });
   const due = addDays(soon.intakeDate, 180);            // the 6-month
   const blocks = out.split('BEGIN:VEVENT').filter((b) => b.includes('6-month reassessment'));
   assert.equal(blocks.length, 4, '30/7/1-day warnings plus the due date');
@@ -435,7 +470,7 @@ test('each lead time becomes its own entry, that many days earlier', () => {
 
 test('a warning entry says how many days are left, and the due day says today', () => {
   const soon = { id: 'w2', name: 'Wren F', dob: '2023-03-03', intakeDate: addDays(toISODate(new Date()), 30) };
-  const out = buildClientIcs(soon).ics.replace(/\r\n /g, '');
+  const out = buildClientIcs(soon, { nameStyle: 'full' }).ics.replace(/\r\n /g, '');
   assert.ok(out.includes('SUMMARY:⏳ 30 days · Wren F — 6-month reassessment due'));
   assert.ok(out.includes('SUMMARY:⏳ 7 days · Wren F — 6-month reassessment due'));
   assert.ok(out.includes('SUMMARY:⏳ 1 day · Wren F — 6-month reassessment due'), 'singular for one day');
@@ -516,11 +551,11 @@ test('unticking removes the deadline and its warnings together', () => {
 test('a client switched off drops out of the combined file only', () => {
   const a = { ...client, id: 'a', name: 'Client A' };
   const b = { ...client, id: 'b', name: 'Client B', skip: true };
-  const both = buildCaseloadIcs([a, b]);
+  const both = buildCaseloadIcs([a, b], { nameStyle: 'full' });
   assert.ok(both.ics.includes('Client A'));
   assert.ok(!both.ics.includes('Client B'));
   // Asking for that client directly still works — skip is about the batch.
-  assert.ok(buildClientIcs(b).ics.includes('Client B'));
+  assert.ok(buildClientIcs(b, { nameStyle: 'full' }).ics.includes('Client B'));
 });
 
 test('the combined calendar names itself for the caseload', () => {

@@ -157,7 +157,7 @@ function mapHeader(cells) {
 }
 
 const blank = () => ({
-  id: uid(), name: '', dob: '', caregiverName: '', caregiverDob: '',
+  id: uid(), name: '', nickname: '', dob: '', caregiverName: '', caregiverDob: '',
   intakeDate: '', birthDate: '', type: 'child', notes: '',
 });
 

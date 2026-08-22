@@ -29,7 +29,7 @@ const CATEGORY_ORDER = [
 ];
 
 const emptyClient = () => ({
-  id: uid(), name: '', dob: '', caregiverName: '', caregiverDob: '',
+  id: uid(), name: '', nickname: '', dob: '', caregiverName: '', caregiverDob: '',
   intakeDate: '', birthDate: '', type: 'child', notes: '',
 });
 
@@ -67,7 +67,9 @@ export default function App() {
   const [clients, setClients] = useState([]);
   const [leadTimes, setLeadTimes] = useState(DEFAULT_LEAD_TIMES);
   const [categories, setCategories] = useState(CATEGORY_ORDER);
-  const [nameStyle, setNameStyle] = useState('full');
+  // Initials by default: a calendar file travels further than the browser it
+  // was made in, and a shared one is read by the whole team.
+  const [nameStyle, setNameStyle] = useState('initials');
   const [skipPast, setSkipPast] = useState(true);
   const [headsUp, setHeadsUp] = useState(true);
   const [tab, setTab] = useState('clients');
@@ -183,7 +185,8 @@ export default function App() {
           </p>
           <div className="privacy mt-4">
             Everything stays in this browser. Nothing is uploaded, and no account is
-            involved. Use initials or a nickname if you would rather not type full names.
+            involved. Calendars go out under initials by default — swap to nicknames or
+            full names under Export.
           </div>
         </header>
 
@@ -549,6 +552,12 @@ function ClientCard({ client, categories, onChange, onRemove, onExport }) {
               <Field label="Name">
                 <input className="in" value={client.name} onChange={(e) => onChange({ name: e.target.value })} />
               </Field>
+              <Field label="Nickname (for the calendar)">
+                <input
+                  className="in" value={client.nickname || ''} placeholder={displayName(client, 'initials')}
+                  onChange={(e) => onChange({ nickname: e.target.value })}
+                />
+              </Field>
               <Field label="Child DOB">
                 <input className="in" type="date" value={client.dob} onChange={(e) => onChange({ dob: e.target.value })} />
               </Field>
@@ -747,6 +756,8 @@ function ExportTab({
   }, { total: 0, dues: 0 }), [on, categories, skipPast, headsUp, leadTimes]);
   const pastCount = useMemo(() => countPastDates(on, { categories }), [on, categories]);
   const setSkip = (id, skip) => setClients((prev) => prev.map((c) => (c.id === id ? { ...c, skip } : c)));
+  const setNickname = (id, nickname) => setClients((prev) => prev.map((c) => (c.id === id ? { ...c, nickname } : c)));
+  const missingNicknames = useMemo(() => on.filter((c) => !(c.nickname || '').trim()).length, [on]);
 
   return (
     <section className="mt-5">
@@ -808,27 +819,36 @@ function ExportTab({
         <div className="per-client mt-4">
           <div className="field-label">Names inside the calendar</div>
           <p className="hint">
-            A calendar file travels — onto your phone, into a synced account. Initials keep
-            every date intact while showing less on a lock screen. Your full list stays here
-            either way.
+            A calendar file travels — onto a phone, into a synced account, in front of
+            everyone the calendar is shared with. Initials and nicknames keep every date
+            intact while showing less. Your full list stays in this browser either way.
+            {nameStyle === 'nickname' && missingNicknames > 0
+              ? ` ${missingNicknames} client${missingNicknames === 1 ? ' has' : 's have'} no nickname yet — ${missingNicknames === 1 ? 'that one falls' : 'those fall'} back to initials.`
+              : ''}
           </p>
           <div className="flex gap-2 flex-wrap mt-2">
-            <button
-              className={'seg ' + (nameStyle === 'full' ? 'seg-on' : '')}
-              onClick={() => setNameStyle('full')}
-            >
-              Full name
-            </button>
             <button
               className={'seg ' + (nameStyle === 'initials' ? 'seg-on' : '')}
               onClick={() => setNameStyle('initials')}
             >
-              Initials only
+              Initials
+            </button>
+            <button
+              className={'seg ' + (nameStyle === 'nickname' ? 'seg-on' : '')}
+              onClick={() => setNameStyle('nickname')}
+            >
+              Nicknames
+            </button>
+            <button
+              className={'seg ' + (nameStyle === 'full' ? 'seg-on' : '')}
+              onClick={() => setNameStyle('full')}
+            >
+              Full names
             </button>
           </div>
           {clients.length > 0 && (
             <div className="preview-line mt-2">
-              Events will read <strong>{displayName(clients[0], nameStyle)} — 6-month reassessment due</strong>
+              Events will read <strong>{displayName(on[0] || clients[0], nameStyle)} — 6-month reassessment due</strong>
             </div>
           )}
         </div>
@@ -845,6 +865,7 @@ function ExportTab({
             <p className="hint mt-2">
               Unticking leaves a client out of both downloads above. The arrow grabs
               that one client on its own.
+              {nameStyle === 'nickname' ? ' Type each nickname here — blank falls back to initials.' : ''}
             </p>
             {clients.map((c) => {
               const built = buildClientIcs(c, { categories, skipPast, headsUp, leadTimes });
@@ -855,11 +876,20 @@ function ExportTab({
                     <span className="min-w-0">
                       <span className="pick-name">{c.name || 'Unnamed client'}</span>
                       <span className="pick-meta">
-                        {built.dueCount} deadline{built.dueCount === 1 ? '' : 's'}
+                        goes in as <strong>{displayName(c, nameStyle)}</strong> · {built.dueCount} deadline{built.dueCount === 1 ? '' : 's'}
                         {headsUp && built.count > built.dueCount ? ` · ${built.count - built.dueCount} warnings` : ''}
                       </span>
                     </span>
                   </label>
+                  {nameStyle === 'nickname' && (
+                    <input
+                      className="in nick-in"
+                      value={c.nickname || ''}
+                      placeholder={displayName(c, 'initials')}
+                      onChange={(e) => setNickname(c.id, e.target.value)}
+                      aria-label={`Nickname for ${c.name || 'this client'}`}
+                    />
+                  )}
                   <button className="icon-btn" onClick={() => exportClient(c)} title={`Download just ${c.name || 'this client'}`}>
                     <Download size={15} />
                   </button>
@@ -1075,6 +1105,8 @@ code { background:#F1EFE6; border-radius:5px; padding:1px 5px; font-size:12.5px;
 .pick-meta { display:block; font-size:11.5px; color:var(--ink-soft); }
 .pick-off { opacity:.45; }
 .pick-off .pick-name { text-decoration:line-through; }
+.pick-meta strong { color:var(--pine); font-weight:700; }
+.nick-in { width:104px; flex-shrink:0; font-size:13px; padding:6px 9px; }
 .sched-check { width:17px; height:17px; margin-top:11px; flex-shrink:0; accent-color:var(--pine); cursor:pointer; }
 .sched-off { opacity:.42; }
 .sched-off .sched-label { text-decoration:line-through; }

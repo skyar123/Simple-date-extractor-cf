@@ -48,23 +48,35 @@ const recurrenceNote = {
   every90: ' (every 90 days)',
 };
 
-/**
- * How a client is named inside the calendar. A calendar file tends to travel —
- * onto a phone, into a shared account, through a sync service — so 'initials'
- * keeps every deadline intact while reducing what the events themselves reveal.
- * The full record stays in this browser either way.
- */
-export function displayName(client, nameStyle = 'full') {
-  const full = (client?.name || '').trim();
-  if (!full) return 'Client';
-  if (nameStyle !== 'initials') return full;
-  const initials = full
+const initialsOf = (full) => {
+  const letters = String(full || '')
     .split(/[\s,]+/).filter(Boolean)
     .map((part) => part[0])
     .filter((ch) => /[A-Za-z]/.test(ch))
     .join('.')
     .toUpperCase();
-  return initials ? `${initials}.` : 'Client';
+  return letters ? `${letters}.` : '';
+};
+
+/**
+ * How a client is named inside the calendar.
+ *
+ * A calendar file travels: onto a phone, into a shared account, onto a lock
+ * screen, in front of every colleague the calendar is shared with. So the
+ * default is 'initials', and 'full' is the deliberate exception rather than the
+ * starting point. 'nickname' uses the name the team already uses for a family,
+ * which reads far better than "M.B." on a shared calendar.
+ *
+ * Both reduced modes fall back to initials rather than to the full name: a
+ * missing nickname must never quietly reveal more than was asked for.
+ */
+export function displayName(client, nameStyle = 'initials') {
+  const full = (client?.name || '').trim();
+  const nickname = (client?.nickname || '').trim();
+
+  if (nameStyle === 'full') return full || 'Client';
+  if (nameStyle === 'nickname' && nickname) return nickname;
+  return initialsOf(full) || nickname || 'Client';
 }
 
 // One VEVENT, assembled from parts. Everything here is all-day: a deadline is a
@@ -129,7 +141,7 @@ function milestoneEvents(client, m, leadTimes, nameStyle, headsUp, skipPast) {
   // name ("Ava Ramirez turns 3"), so initials mode has to reach inside them too.
   const caregiver = displayName({ name: client.caregiverName }, nameStyle);
   const mask = (text) => {
-    if (nameStyle !== 'initials') return text;
+    if (nameStyle === 'full') return text;
     let out2 = String(text ?? '');
     const full = (client.name || '').trim();
     if (full) out2 = out2.split(full).join(name);
@@ -245,7 +257,7 @@ export function countPastDates(clients, { categories = null } = {}) {
  * One .ics for one client — this is the per-client calendar.
  * `options.categories` limits which milestone categories are included.
  */
-export function buildClientIcs(client, { leadTimes = DEFAULT_LEAD_TIMES, categories = null, nameStyle = 'full', skipPast = false, headsUp = true } = {}) {
+export function buildClientIcs(client, { leadTimes = DEFAULT_LEAD_TIMES, categories = null, nameStyle = 'initials', skipPast = false, headsUp = true } = {}) {
   const name = displayName(client, nameStyle);
   const schedule = includedSchedule(client, { categories, skipPast });
 
@@ -270,7 +282,7 @@ export function buildClientIcs(client, { leadTimes = DEFAULT_LEAD_TIMES, categor
 }
 
 /** One .ics holding every client — handy for a single "everything" calendar. */
-export function buildCaseloadIcs(clients, { leadTimes = DEFAULT_LEAD_TIMES, categories = null, nameStyle = 'full', skipPast = false, headsUp = true } = {}) {
+export function buildCaseloadIcs(clients, { leadTimes = DEFAULT_LEAD_TIMES, categories = null, nameStyle = 'initials', skipPast = false, headsUp = true } = {}) {
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
