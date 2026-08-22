@@ -22,6 +22,29 @@ const esc = (s) => String(s ?? '')
   .replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
 
 const safeUid = (s) => String(s).replace(/[^a-zA-Z0-9]/g, '').slice(0, 40);
+
+// A short stable hash, used only when a client has no usable id.
+const hash = (s) => {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+};
+
+/**
+ * The identity every one of a client's UIDs is built on.
+ *
+ * This is load-bearing: two clients sharing it would have their entries merged
+ * into one by any calendar app, since a UID *is* the event's identity — one
+ * family's deadlines would silently overwrite another's. A record with no id
+ * (a hand-edited backup, an import from elsewhere) therefore falls back to a
+ * hash of the fields that define the client rather than to the string
+ * "undefined", which every id-less client would otherwise share.
+ */
+const clientKey = (client) => {
+  const id = safeUid(client?.id || '');
+  if (id) return id;
+  return `x${hash([client?.name, client?.dob, client?.intakeDate].join('|'))}`;
+};
 const compact = (ymd) => ymd.replace(/-/g, '');
 const at = (ymd, hour, min = 0) => `${compact(ymd)}T${pad(hour)}${pad(min)}00`;
 
@@ -136,7 +159,7 @@ function milestoneEvents(client, m, leadTimes, nameStyle, headsUp, skipPast) {
   const isBirthday = m.category === 'birthday';
   const rrule = m.recurrence ? RECURRENCE_RULES[m.recurrence] : null;
   const category = CATEGORY_LABELS[m.category] || 'Due date';
-  const baseUid = `${safeUid(client.id)}-${safeUid(m.id)}`;
+  const baseUid = `${clientKey(client)}-${safeUid(m.id)}`;
 
   // Birthday labels are composed in rules.js and already carry the person's
   // name ("Ava Ramirez turns 3"), so initials mode has to reach inside them too.
@@ -294,7 +317,7 @@ function cancellation(uid, date) {
 export function exportedUids(client, { leadTimes = DEFAULT_LEAD_TIMES } = {}) {
   const uids = [];
   getClientSchedule(client).forEach((m) => {
-    const baseUid = `${safeUid(client.id)}-${safeUid(m.id)}`;
+    const baseUid = `${clientKey(client)}-${safeUid(m.id)}`;
     uids.push({ uid: `${baseUid}@duedates`, date: m.date });
     (leadTimes[m.category] || DEFAULT_LEAD_TIMES[m.category] || [7, 1])
       .filter((d) => Number.isFinite(d) && d > 0)

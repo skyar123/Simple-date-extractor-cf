@@ -52,6 +52,24 @@ export const isSameClient = (a, b) => {
   return sameName && sameIntake;
 };
 
+/**
+ * Guarantees every client has an id of their own.
+ *
+ * A client's id is what their calendar UIDs are built from, so two clients
+ * sharing one would have their entries merged into a single event by any
+ * calendar app — one family's deadlines quietly replacing another's. Ids are
+ * generated uniquely, but a hand-edited backup or a file copied between devices
+ * can arrive with duplicates or none, so they are repaired on the way in.
+ */
+const withUniqueIds = (list) => {
+  const seen = new Set();
+  return list.map((c) => {
+    const id = c?.id && !seen.has(c.id) ? c.id : uid();
+    seen.add(id);
+    return { ...c, id };
+  });
+};
+
 // Only carry over fields the paste actually filled in, so re-pasting a trimmed
 // export never blanks out a detail that was added by hand.
 const stripEmpty = (row) =>
@@ -86,7 +104,7 @@ export default function App() {
       const raw = localStorage.getItem(STORE_KEY);
       if (raw) {
         const saved = JSON.parse(raw);
-        if (Array.isArray(saved.clients)) setClients(saved.clients);
+        if (Array.isArray(saved.clients)) setClients(withUniqueIds(saved.clients));
         if (saved.leadTimes) setLeadTimes({ ...DEFAULT_LEAD_TIMES, ...saved.leadTimes });
         if (Array.isArray(saved.categories) && saved.categories.length) setCategories(saved.categories);
         // 'full' was briefly an option. It is not one any more, and a stored
@@ -173,7 +191,7 @@ export default function App() {
       try {
         const data = JSON.parse(reader.result);
         if (!Array.isArray(data.clients)) throw new Error('no clients');
-        setClients(data.clients);
+        setClients(withUniqueIds(data.clients));
         if (data.leadTimes) setLeadTimes({ ...DEFAULT_LEAD_TIMES, ...data.leadTimes });
         if (Array.isArray(data.categories) && data.categories.length) setCategories(data.categories);
         setNameStyle(data.nameStyle === 'nickname' ? 'nickname' : 'initials');

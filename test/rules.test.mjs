@@ -631,4 +631,22 @@ test('cancelling twice over is harmless', () => {
   assert.equal(buildRemovalIcs([...marks, ...marks]).count, buildRemovalIcs(marks).count);
 });
 
+
+// ---- UID identity ----------------------------------------------------------
+
+test('a client with no id still gets UIDs of their own', () => {
+  const a = buildClientIcs({ name: 'X Y', dob: '2023-01-01', intakeDate: '2026-01-01' }).ics;
+  const b = buildClientIcs({ name: 'Q Z', dob: '2024-02-02', intakeDate: '2026-03-03' }).ics;
+  assert.ok(!a.includes('UID:undefined'), 'never the literal string "undefined"');
+  assert.ok(!a.includes('UID:-'), 'never an empty client key');
+  const first = (t) => t.match(/UID:(.*)/)[1];
+  assert.notEqual(first(a), first(b), 'two id-less clients must not share an identity');
+});
+
+test('the same id-less client is stable across exports', () => {
+  const c = { name: 'X Y', dob: '2023-01-01', intakeDate: '2026-01-01' };
+  assert.equal(buildClientIcs(c).ics.match(/UID:(.*)/)[1], buildClientIcs({ ...c }).ics.match(/UID:(.*)/)[1],
+    'a re-export must still update in place, not duplicate');
+});
+
 if (!process.exitCode) console.log(`✓ ${passed} tests passed`);
