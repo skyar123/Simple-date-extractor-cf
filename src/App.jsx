@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   CalendarDays, Download, Trash2, Plus, Check, X, AlertTriangle, Info,
   ClipboardPaste, Cake, ChevronDown, Settings2, Users, Package,
-  ExternalLink, RotateCcw, Save, Printer,
+  ExternalLink, RotateCcw, Save, Printer, Archive, Undo2,
 } from 'lucide-react';
 
 import {
@@ -11,8 +11,8 @@ import {
 } from './rules.js';
 import { parseCaseload, uid } from './parse.js';
 import {
-  buildCaseloadIcs, buildClientIcs, buildZip, countPastDates, downloadBlob,
-  downloadText, displayName, googleCalendarUrl, slug,
+  buildCaseloadIcs, buildClientIcs, buildRemovalIcs, buildZip, countPastDates,
+  downloadBlob, downloadText, displayName, exportedUids, googleCalendarUrl, slug,
 } from './ics.js';
 
 /* ============================================================
@@ -72,6 +72,10 @@ export default function App() {
   const [nameStyle, setNameStyle] = useState('initials');
   const [skipPast, setSkipPast] = useState(true);
   const [headsUp, setHeadsUp] = useState(true);
+  // Entries already sent to a calendar for clients who have since been
+  // discharged. Importing adds and updates but never removes, so these have to
+  // be cancelled explicitly or a closed case haunts a shared calendar.
+  const [removals, setRemovals] = useState([]);
   const [tab, setTab] = useState('clients');
   const [loaded, setLoaded] = useState(false);
   const [toast, setToast] = useState('');
@@ -85,9 +89,12 @@ export default function App() {
         if (Array.isArray(saved.clients)) setClients(saved.clients);
         if (saved.leadTimes) setLeadTimes({ ...DEFAULT_LEAD_TIMES, ...saved.leadTimes });
         if (Array.isArray(saved.categories) && saved.categories.length) setCategories(saved.categories);
-        if (saved.nameStyle) setNameStyle(saved.nameStyle);
+        // 'full' was briefly an option. It is not one any more, and a stored
+        // preference must not resurrect it.
+        if (saved.nameStyle === 'nickname') setNameStyle('nickname');
         if (typeof saved.skipPast === 'boolean') setSkipPast(saved.skipPast);
         if (typeof saved.headsUp === 'boolean') setHeadsUp(saved.headsUp);
+        if (Array.isArray(saved.removals)) setRemovals(saved.removals);
       }
     } catch {
       /* corrupt or unavailable storage — start clean rather than blocking the app */
@@ -98,11 +105,11 @@ export default function App() {
   useEffect(() => {
     if (!loaded) return;
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ clients, leadTimes, categories, nameStyle, skipPast, headsUp }));
+      localStorage.setItem(STORE_KEY, JSON.stringify({ clients, leadTimes, categories, nameStyle, skipPast, headsUp, removals }));
     } catch {
       /* private mode / quota — the export buttons still work */
     }
-  }, [clients, leadTimes, categories, nameStyle, skipPast, headsUp, loaded]);
+  }, [clients, leadTimes, categories, nameStyle, skipPast, headsUp, removals, loaded]);
 
   const say = (message) => {
     setToast(message);
@@ -136,8 +143,26 @@ export default function App() {
     say(`${files.length} client calendar${files.length === 1 ? '' : 's'} zipped.`);
   };
 
+  // Discharging keeps the tombstones and drops the client. The entries stay
+  // recorded until the removal file has actually been imported, since that is
+  // the only thing that clears them from a calendar.
+  const discharge = (client) => {
+    const label = displayName(client, nameStyle);
+    const marks = exportedUids(client, { leadTimes }).map((t) => ({ ...t, label }));
+    setRemovals((prev) => [...prev, ...marks]);
+    setClients((prev) => prev.filter((c) => c.id !== client.id));
+    say(`${label} discharged — download the removal file to clear their dates.`);
+  };
+
+  const exportRemovals = () => {
+    const { ics, count } = buildRemovalIcs(removals);
+    if (!count) return say('Nothing to remove.');
+    downloadText(ics, `child-first-remove-${todayISO()}.ics`);
+    say(`${count} entries marked for removal. Import this into the same calendar.`);
+  };
+
   const backup = () => {
-    downloadText(JSON.stringify({ version: 1, savedAt: new Date().toISOString(), clients, leadTimes, categories, nameStyle, skipPast, headsUp }, null, 2),
+    downloadText(JSON.stringify({ version: 1, savedAt: new Date().toISOString(), clients, leadTimes, categories, nameStyle, skipPast, headsUp, removals }, null, 2),
       `due-dates-backup-${todayISO()}.json`, 'application/json');
     say('Backup saved.');
   };
@@ -151,9 +176,10 @@ export default function App() {
         setClients(data.clients);
         if (data.leadTimes) setLeadTimes({ ...DEFAULT_LEAD_TIMES, ...data.leadTimes });
         if (Array.isArray(data.categories) && data.categories.length) setCategories(data.categories);
-        if (data.nameStyle) setNameStyle(data.nameStyle);
+        setNameStyle(data.nameStyle === 'nickname' ? 'nickname' : 'initials');
         if (typeof data.skipPast === 'boolean') setSkipPast(data.skipPast);
         if (typeof data.headsUp === 'boolean') setHeadsUp(data.headsUp);
+        if (Array.isArray(data.removals)) setRemovals(data.removals);
         say(`Restored ${data.clients.length} client${data.clients.length === 1 ? '' : 's'}.`);
       } catch {
         say('That file did not look like a Due Dates backup.');
@@ -203,7 +229,7 @@ export default function App() {
         {tab === 'clients' && (
           <ClientsTab
             clients={clients} setClients={setClients}
-            exportClient={exportClient} say={say} categories={categories}
+            exportClient={exportClient} say={say} categories={categories} discharge={discharge}
           />
         )}
 
@@ -217,6 +243,7 @@ export default function App() {
             categories={categories} setCategories={setCategories}
             nameStyle={nameStyle} setNameStyle={setNameStyle}
             skipPast={skipPast} setSkipPast={setSkipPast}
+            removals={removals} setRemovals={setRemovals} exportRemovals={exportRemovals}
             headsUp={headsUp} setHeadsUp={setHeadsUp}
             exportClient={exportClient} exportAllCombined={exportAllCombined}
             exportAllZipped={exportAllZipped} backup={backup} restore={restore}
@@ -252,7 +279,7 @@ function TabButton({ id, tab, setTab, icon: Icon, children }) {
 // CLIENTS
 // ---------------------------------------------------------------------------
 
-function ClientsTab({ clients, setClients, exportClient, say, categories }) {
+function ClientsTab({ clients, setClients, exportClient, say, categories, discharge }) {
   const [paste, setPaste] = useState('');
   const [review, setReview] = useState(null);
   const [skipped, setSkipped] = useState([]);
@@ -361,6 +388,7 @@ function ClientsTab({ clients, setClients, exportClient, say, categories }) {
           key={c.id} client={c} categories={categories}
           onChange={(patch) => update(c.id, patch)}
           onRemove={() => remove(c.id)}
+          onDischarge={() => discharge(c)}
           onExport={() => exportClient(c)}
         />
       ))}
@@ -477,7 +505,7 @@ function IssueList({ issues }) {
   );
 }
 
-function ClientCard({ client, categories, onChange, onRemove, onExport }) {
+function ClientCard({ client, categories, onChange, onRemove, onDischarge, onExport }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(!client.name || client.name === 'Unnamed client');
 
@@ -588,8 +616,21 @@ function ClientCard({ client, categories, onChange, onRemove, onExport }) {
             <button className="btn-ghost" onClick={() => setEditing(!editing)}>
               {editing ? 'Done editing' : 'Edit dates'}
             </button>
-            <button className="btn-ghost danger" onClick={onRemove}>
-              <Trash2 size={15} /> Remove
+            <button
+              className="btn-ghost"
+              onClick={() => {
+                if (window.confirm(`Discharge ${client.name || 'this client'}?\n\nThey come off your list, and their dates are queued for removal from any calendar you already sent them to. Download the removal file afterwards to finish the job.`)) onDischarge();
+              }}
+            >
+              <Archive size={15} /> Discharge
+            </button>
+            <button
+              className="btn-ghost danger"
+              onClick={() => {
+                if (window.confirm(`Delete ${client.name || 'this client'} outright?\n\nNothing is queued for removal — use Discharge instead if their dates are already in a calendar.`)) onRemove();
+              }}
+            >
+              <Trash2 size={15} /> Delete
             </button>
           </div>
 
@@ -746,6 +787,7 @@ function UpcomingRow({ m }) {
 function ExportTab({
   clients, setClients, leadTimes, setLeadTimes, categories, setCategories,
   nameStyle, setNameStyle, skipPast, setSkipPast, headsUp, setHeadsUp,
+  removals, setRemovals, exportRemovals,
   exportClient, exportAllCombined, exportAllZipped, backup, restore,
 }) {
   const fileRef = useRef(null);
@@ -758,6 +800,7 @@ function ExportTab({
   const setSkip = (id, skip) => setClients((prev) => prev.map((c) => (c.id === id ? { ...c, skip } : c)));
   const setNickname = (id, nickname) => setClients((prev) => prev.map((c) => (c.id === id ? { ...c, nickname } : c)));
   const missingNicknames = useMemo(() => on.filter((c) => !(c.nickname || '').trim()).length, [on]);
+  const dischargedNames = useMemo(() => [...new Set(removals.map((r) => r.label).filter(Boolean))], [removals]);
 
   return (
     <section className="mt-5">
@@ -820,8 +863,9 @@ function ExportTab({
           <div className="field-label">Names inside the calendar</div>
           <p className="hint">
             A calendar file travels — onto a phone, into a synced account, in front of
-            everyone the calendar is shared with. Initials and nicknames keep every date
-            intact while showing less. Your full list stays in this browser either way.
+            everyone the calendar is shared with, and it cannot be unshared. So full names
+            never go into one. Names stay here, where you need them to tell clients apart;
+            only initials or a nickname leave.
             {nameStyle === 'nickname' && missingNicknames > 0
               ? ` ${missingNicknames} client${missingNicknames === 1 ? ' has' : 's have'} no nickname yet — ${missingNicknames === 1 ? 'that one falls' : 'those fall'} back to initials.`
               : ''}
@@ -838,12 +882,6 @@ function ExportTab({
               onClick={() => setNameStyle('nickname')}
             >
               Nicknames
-            </button>
-            <button
-              className={'seg ' + (nameStyle === 'full' ? 'seg-on' : '')}
-              onClick={() => setNameStyle('full')}
-            >
-              Full names
             </button>
           </div>
           {clients.length > 0 && (
@@ -899,6 +937,37 @@ function ExportTab({
           </div>
         )}
       </div>
+
+      {removals.length > 0 && (
+        <div className="card mt-3 removal-card">
+          <div className="card-title"><Archive size={16} /> Clear discharged clients</div>
+          <p className="hint">
+            {dischargedNames.length} discharged client{dischargedNames.length === 1 ? '' : 's'}
+            {' '}({dischargedNames.join(', ')}) still {dischargedNames.length === 1 ? 'has' : 'have'}
+            {' '}{removals.length} entr{removals.length === 1 ? 'y' : 'ies'} sitting in whatever
+            calendar you sent them to. Importing only ever adds and updates, so these have to
+            be cancelled on purpose.
+          </p>
+          <ol className="steps mt-2">
+            <li>Download the removal file.</li>
+            <li>Import it into <strong>the same calendar</strong> the originals went to.</li>
+            <li>Their entries disappear for you and for everyone the calendar is shared with.</li>
+          </ol>
+          <div className="flex gap-2 flex-wrap mt-3">
+            <button className="btn-primary" onClick={exportRemovals}>
+              <Download size={16} /> Removal file ({removals.length})
+            </button>
+            <button
+              className="btn-ghost"
+              onClick={() => {
+                if (window.confirm('Clear this list without downloading?\n\nOnly do this if those dates were never sent to a calendar, or you have already removed them by hand.')) setRemovals([]);
+              }}
+            >
+              <Undo2 size={15} /> Already handled
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="card mt-3">
         <div className="card-title"><Settings2 size={16} /> Reminders</div>
@@ -1162,6 +1231,7 @@ code { background:#F1EFE6; border-radius:5px; padding:1px 5px; font-size:12.5px;
 .seg:hover { border-color:#CBDDCE; color:var(--ink); }
 .seg-on { background:var(--pine); border-color:var(--pine); color:#fff; }
 .seg-on:hover { background:var(--pine-deep); color:#fff; }
+.removal-card { border-color:#EFD9B4; background:#FFFDF8; }
 .heads-up { display:flex; align-items:flex-start; gap:9px; background:var(--frp); border:1px solid #CBDDCE; border-radius:14px; padding:12px 14px; font-size:12.5px; line-height:1.5; color:var(--pine); cursor:pointer; }
 .heads-up input { width:16px; height:16px; margin-top:1px; flex-shrink:0; accent-color:var(--pine); }
 .heads-up strong { font-size:13.5px; color:var(--pine-deep); }

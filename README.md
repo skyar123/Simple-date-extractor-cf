@@ -116,17 +116,19 @@ scatters stale entries back through your calendar. This keeps the export
 forward-looking. Birthdays and the 90-day SNIFF are never dropped — their next
 occurrence is still ahead — and everything stays visible under *What's coming*.
 
-**How clients are named** — three choices, and **initials is the default**.
+**How clients are named** — two choices, and **a full name is never one of them**.
 
 | Mode | An event reads | When |
 | --- | --- | --- |
-| **Initials** (default) | `R.D.V. — 6-month reassessment due` | Anything shared, anything on a phone |
+| **Initials** (default) | `R.D.V. — 6-month reassessment due` | Anything at all |
 | **Nicknames** | `Sunflower — 6-month reassessment due` | A shared team calendar — far easier to read than initials |
-| **Full names** | `Rowan Delacroix Vance — 6-month…` | A private calendar only you see |
 
 A calendar file travels: onto a phone, into a synced account, onto a lock
-screen, in front of everyone the calendar is shared with. So the reduced modes
-are the starting point and full names are the deliberate exception.
+screen, in front of everyone the calendar is shared with — and it cannot be
+unshared. So a child's full name is never written into one. This is a floor, not
+a preference: an unrecognised setting, an old saved preference, a backup
+restored from an earlier version — all of them land on initials. There is no
+code path that produces a full name in a calendar file.
 
 Nicknames are typed straight into the export list — one box per client, all in
 one place. **A client with no nickname falls back to initials, never to their
@@ -156,6 +158,26 @@ count. Unticking leaves that client out of the batch downloads while still
 letting you grab them individually.
 
 All of it is remembered between visits.
+
+## Discharging a client
+
+Importing adds and updates, but it never removes. So a family who closes would
+otherwise leave a year of deadlines sitting in your calendar — and in your
+colleagues', if it is shared.
+
+**Discharge** on a client's card handles it: they come off your list, and every
+entry they were exported with is queued for cancellation. The export screen then
+offers a **removal file** — import that into the same calendar and their entries
+disappear, for you and for everyone the calendar is shared with.
+
+The removal file carries no names and no detail, only the identifiers of the
+entries to cancel. Importing it twice, or into a calendar that never had them,
+does nothing. The queue survives a reload and is only cleared by downloading the
+file or saying you have already handled it — losing track of a discharge would
+mean a closed case quietly haunting a shared calendar.
+
+**Delete** is the other button, for a row pasted by mistake: it removes the
+client and queues nothing.
 
 ## Getting the calendars into Google
 
@@ -216,7 +238,7 @@ doing before you clear site data.
 npm install
 npm run dev      # local dev server
 npm run build    # production build into dist/
-npm test         # 69 checks over the date math, the parser, and the .ics output
+npm test         # 75 checks over the date math, the parser, and the .ics output
 ```
 
 Deploy on Netlify by connecting this repository directly — `netlify.toml` at

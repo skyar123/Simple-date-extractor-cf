@@ -7,7 +7,7 @@ import {
   addDays, addMonths, formatAge, formatDate, getClientSchedule, getIssues, getUpcoming, parseDate, toISODate,
 } from '../src/rules.js';
 import { findDates, findDeclaredCount, parseCaseload } from '../src/parse.js';
-import { buildCaseloadIcs, buildClientIcs, buildZip, countPastDates, displayName, googleCalendarUrl, slug } from '../src/ics.js';
+import { buildCaseloadIcs, buildClientIcs, buildRemovalIcs, buildZip, countPastDates, displayName, exportedUids, googleCalendarUrl, slug } from '../src/ics.js';
 
 let passed = 0;
 const test = (name, fn) => {
@@ -215,7 +215,7 @@ test('lines with no date are reported instead of becoming empty clients', () => 
 
 // ---- calendar output -------------------------------------------------------
 
-const { ics, count } = buildClientIcs(client, { nameStyle: 'full' });
+const { ics, count } = buildClientIcs(client);
 
 test('the per-client calendar is a well-formed VCALENDAR', () => {
   assert.ok(ics.startsWith('BEGIN:VCALENDAR'));
@@ -223,7 +223,7 @@ test('the per-client calendar is a well-formed VCALENDAR', () => {
   assert.equal((ics.match(/BEGIN:VEVENT/g) || []).length, count);
   assert.equal((ics.match(/BEGIN:VEVENT/g) || []).length, (ics.match(/END:VEVENT/g) || []).length);
   assert.equal((ics.match(/BEGIN:VALARM/g) || []).length, (ics.match(/END:VALARM/g) || []).length);
-  assert.ok(ics.includes('X-WR-CALNAME:Ava R — Due Dates'));
+  assert.ok(ics.includes('X-WR-CALNAME:A.R. — Due Dates'));
 });
 
 test('every line is CRLF-terminated and folded under the 75-octet limit', () => {
@@ -279,9 +279,9 @@ test('categories can be filtered out of the export', () => {
 });
 
 test('the combined calendar holds every client', () => {
-  const two = buildCaseloadIcs([client, { ...client, id: 'c2', name: 'Theo W' }], { nameStyle: 'full' });
-  assert.ok(two.ics.includes('Ava R'));
-  assert.ok(two.ics.includes('Theo W'));
+  const two = buildCaseloadIcs([client, { ...client, id: 'c2', name: 'Theo W' }]);
+  assert.ok(two.ics.includes('A.R.'));
+  assert.ok(two.ics.includes('T.W.'));
   assert.equal(two.count, count * 2);
 });
 
@@ -366,7 +366,7 @@ test('no social security number survives a full caseload paste', () => {
 test('displayName reduces a name to initials on request', () => {
   assert.equal(displayName({ name: 'Rowan Delacroix Vance' }, 'initials'), 'R.D.V.');
   assert.equal(displayName({ name: 'Ava R' }, 'initials'), 'A.R.');
-  assert.equal(displayName({ name: 'Ava R' }, 'full'), 'Ava R');
+  assert.equal(displayName({ name: 'Ava R' }, 'full'), 'A.R.', 'there is no full-name mode');
   assert.equal(displayName({ name: '' }, 'initials'), 'Client');
 });
 
@@ -382,12 +382,22 @@ test('initials mode keeps full names out of the calendar entirely', () => {
   assert.ok(!bday.includes('Rowan'), 'the birthday label leaked the full name');
 });
 
-test('full names appear only when asked for', () => {
-  const named = { ...client, name: 'Rowan Delacroix Vance' };
-  assert.ok(buildClientIcs(named, { nameStyle: 'full' }).ics.includes('Rowan Delacroix Vance'));
-  assert.ok(!buildClientIcs(named).ics.includes('Rowan Delacroix Vance'),
-    'initials is the default — a full name is never the fallback');
-  assert.ok(buildClientIcs(named).ics.includes('R.D.V.'));
+test('a full name cannot be written into a calendar, whatever is asked for', () => {
+  const named = { ...client, name: 'Rowan Delacroix Vance', caregiverName: 'Dana Delacroix Vance' };
+  // Every mode, including ones that no longer exist and ones that never did.
+  ['initials', 'nickname', 'full', 'FULL', '', null, undefined, 'anything'].forEach((mode) => {
+    const out = buildClientIcs(named, { nameStyle: mode }).ics;
+    assert.ok(!out.includes('Rowan'), `first name leaked under ${JSON.stringify(mode)}`);
+    assert.ok(!out.includes('Delacroix'), `surname leaked under ${JSON.stringify(mode)}`);
+    assert.ok(!out.includes('Dana'), `caregiver leaked under ${JSON.stringify(mode)}`);
+    assert.ok(out.includes('R.D.V.'), `no usable name under ${JSON.stringify(mode)}`);
+  });
+});
+
+test('a stale "full" setting falls back to initials rather than honouring itself', () => {
+  const named = { ...client, name: 'Rowan Delacroix Vance', nickname: 'Sunflower' };
+  assert.equal(displayName(named, 'full'), 'R.D.V.');
+  assert.equal(displayName(named, 'nickname'), 'Sunflower');
 });
 
 test('a nickname is used when there is one, initials when there is not', () => {
@@ -412,9 +422,8 @@ test('a nickname reaches the birthday label and the filename too', () => {
   assert.equal(slug(displayName(named, 'nickname')), 'sunflower');
 });
 
-test('displayName covers all three modes', () => {
+test('displayName covers both modes', () => {
   const c = { name: 'Rowan Delacroix Vance', nickname: 'Sunflower' };
-  assert.equal(displayName(c, 'full'), 'Rowan Delacroix Vance');
   assert.equal(displayName(c, 'nickname'), 'Sunflower');
   assert.equal(displayName(c, 'initials'), 'R.D.V.');
   assert.equal(displayName(c), 'R.D.V.', 'initials is the default');
@@ -456,7 +465,7 @@ test('skipPast is off unless asked for', () => {
 test('each lead time becomes its own entry, that many days earlier', () => {
   // Intake far enough out that nothing is past and nothing gets skipped.
   const soon = { id: 'w', name: 'Wren F', dob: '2023-03-03', intakeDate: addDays(toISODate(new Date()), 30) };
-  const { ics: out } = buildClientIcs(soon, { nameStyle: 'full' });
+  const { ics: out } = buildClientIcs(soon);
   const due = addDays(soon.intakeDate, 180);            // the 6-month
   const blocks = out.split('BEGIN:VEVENT').filter((b) => b.includes('6-month reassessment'));
   assert.equal(blocks.length, 4, '30/7/1-day warnings plus the due date');
@@ -470,11 +479,11 @@ test('each lead time becomes its own entry, that many days earlier', () => {
 
 test('a warning entry says how many days are left, and the due day says today', () => {
   const soon = { id: 'w2', name: 'Wren F', dob: '2023-03-03', intakeDate: addDays(toISODate(new Date()), 30) };
-  const out = buildClientIcs(soon, { nameStyle: 'full' }).ics.replace(/\r\n /g, '');
-  assert.ok(out.includes('SUMMARY:⏳ 30 days · Wren F — 6-month reassessment due'));
-  assert.ok(out.includes('SUMMARY:⏳ 7 days · Wren F — 6-month reassessment due'));
-  assert.ok(out.includes('SUMMARY:⏳ 1 day · Wren F — 6-month reassessment due'), 'singular for one day');
-  assert.ok(out.includes('SUMMARY:🔴 Wren F — 6-month reassessment due'));
+  const out = buildClientIcs(soon).ics.replace(/\r\n /g, '');
+  assert.ok(out.includes('SUMMARY:⏳ 30 days · W.F. — 6-month reassessment due'));
+  assert.ok(out.includes('SUMMARY:⏳ 7 days · W.F. — 6-month reassessment due'));
+  assert.ok(out.includes('SUMMARY:⏳ 1 day · W.F. — 6-month reassessment due'), 'singular for one day');
+  assert.ok(out.includes('SUMMARY:🔴 W.F. — 6-month reassessment due'));
 });
 
 const escComma = (s) => s.replace(/,/g, '\\,');
@@ -551,11 +560,11 @@ test('unticking removes the deadline and its warnings together', () => {
 test('a client switched off drops out of the combined file only', () => {
   const a = { ...client, id: 'a', name: 'Client A' };
   const b = { ...client, id: 'b', name: 'Client B', skip: true };
-  const both = buildCaseloadIcs([a, b], { nameStyle: 'full' });
-  assert.ok(both.ics.includes('Client A'));
-  assert.ok(!both.ics.includes('Client B'));
+  const both = buildCaseloadIcs([a, b]);
+  assert.ok(both.ics.includes('C.A.'));
+  assert.ok(!both.ics.includes('C.B.'));
   // Asking for that client directly still works — skip is about the batch.
-  assert.ok(buildClientIcs(b, { nameStyle: 'full' }).ics.includes('Client B'));
+  assert.ok(buildClientIcs(b).ics.includes('C.B.'));
 });
 
 test('the combined calendar names itself for the caseload', () => {
@@ -578,6 +587,48 @@ test('countPastDates ignores deadlines already switched off', () => {
   const before = countPastDates([old]);
   const after = countPastDates([{ ...old, excluded: { baseline: true } }]);
   assert.equal(after, before - 1);
+});
+
+
+// ---- discharging a client from a calendar ----------------------------------
+
+test('every exported entry gets a UID that can be cancelled later', () => {
+  const c = { id: 'z', name: 'Ann Lee', dob: '2023-02-02', intakeDate: '2026-01-01' };
+  const marks = exportedUids(c);
+  const live = buildClientIcs(c, { skipPast: false }).ics.replace(/\r\n /g, '')
+    .split('\r\n').filter((l) => l.startsWith('UID:')).map((l) => l.slice(4));
+  // Everything the calendar received must be cancellable.
+  live.forEach((uid) => assert.ok(marks.some((m) => m.uid === uid), `no tombstone for ${uid}`));
+});
+
+test('the removal file cancels by UID with a higher sequence', () => {
+  const c = { id: 'z2', name: 'Ann Lee', dob: '2023-02-02', intakeDate: '2026-01-01' };
+  const { ics: out, count } = buildRemovalIcs(exportedUids(c));
+  assert.ok(count > 0);
+  assert.equal((out.match(/STATUS:CANCELLED/g) || []).length, count);
+  assert.equal((out.match(/SEQUENCE:2/g) || []).length, count, 'must outrank the live SEQUENCE:1');
+  assert.ok(out.includes('METHOD:CANCEL'));
+  assert.ok(out.startsWith('BEGIN:VCALENDAR') && out.trimEnd().endsWith('END:VCALENDAR'));
+});
+
+test('a cancellation carries no name or detail', () => {
+  const c = { id: 'z3', name: 'Ann Lee', nickname: 'Bluebird', dob: '2023-02-02', intakeDate: '2026-01-01' };
+  const { ics: out } = buildRemovalIcs(exportedUids(c).map((t) => ({ ...t, label: 'Bluebird' })));
+  assert.ok(!out.includes('Ann'));
+  assert.ok(!out.includes('Bluebird'), 'the label is for the app, not the file');
+  assert.ok(!out.includes('DESCRIPTION'));
+});
+
+test('removals are de-duplicated and bad rows ignored', () => {
+  const one = { uid: 'a@duedates', date: '2026-05-05' };
+  const { count } = buildRemovalIcs([one, one, { uid: '', date: '2026-01-01' }, { uid: 'b@duedates' }]);
+  assert.equal(count, 1);
+});
+
+test('cancelling twice over is harmless', () => {
+  const c = { id: 'z4', name: 'Ann Lee', dob: '2023-02-02', intakeDate: '2026-01-01' };
+  const marks = exportedUids(c);
+  assert.equal(buildRemovalIcs([...marks, ...marks]).count, buildRemovalIcs(marks).count);
 });
 
 if (!process.exitCode) console.log(`✓ ${passed} tests passed`);

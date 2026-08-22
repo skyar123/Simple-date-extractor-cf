@@ -61,20 +61,21 @@ const initialsOf = (full) => {
 /**
  * How a client is named inside the calendar.
  *
- * A calendar file travels: onto a phone, into a shared account, onto a lock
- * screen, in front of every colleague the calendar is shared with. So the
- * default is 'initials', and 'full' is the deliberate exception rather than the
- * starting point. 'nickname' uses the name the team already uses for a family,
- * which reads far better than "M.B." on a shared calendar.
+ * A calendar file travels: onto a phone, into a synced account, onto a lock
+ * screen, in front of every colleague the calendar is shared with. So a child's
+ * full name is NEVER written into one. There are two modes — initials, and a
+ * nickname the team already uses — and no third.
  *
- * Both reduced modes fall back to initials rather than to the full name: a
- * missing nickname must never quietly reveal more than was asked for.
+ * This is deliberately a floor rather than a preference. An unrecognised mode,
+ * an old saved setting, a restored backup from before this rule: all of them
+ * land on initials. Nothing routes to the full name, so nothing can regress
+ * into leaking one. The full name stays in the browser, where it is needed to
+ * tell clients apart, and goes no further.
  */
 export function displayName(client, nameStyle = 'initials') {
   const full = (client?.name || '').trim();
   const nickname = (client?.nickname || '').trim();
 
-  if (nameStyle === 'full') return full || 'Client';
   if (nameStyle === 'nickname' && nickname) return nickname;
   return initialsOf(full) || nickname || 'Client';
 }
@@ -140,8 +141,9 @@ function milestoneEvents(client, m, leadTimes, nameStyle, headsUp, skipPast) {
   // Birthday labels are composed in rules.js and already carry the person's
   // name ("Ava Ramirez turns 3"), so initials mode has to reach inside them too.
   const caregiver = displayName({ name: client.caregiverName }, nameStyle);
+  // Labels composed upstream (a birthday reads "<name> — birthday") carry the
+  // real name, so every one of them is rewritten. No mode skips this.
   const mask = (text) => {
-    if (nameStyle === 'full') return text;
     let out2 = String(text ?? '');
     const full = (client.name || '').trim();
     if (full) out2 = out2.split(full).join(name);
@@ -251,6 +253,81 @@ export function countPastDates(clients, { categories = null } = {}) {
     .filter((m) => (!categories || categories.includes(m.category)))
     .filter((m) => !keepMilestone(m, true) && !isExcluded(c, m))
     .length, 0);
+}
+
+/**
+ * A tombstone: the same event, marked cancelled.
+ *
+ * Importing adds and updates, but it never removes — so a discharged family's
+ * deadlines sit in a shared calendar for the rest of the year, and colleagues
+ * keep seeing work for a closed case. Re-importing an event under its original
+ * UID with STATUS:CANCELLED and a bumped SEQUENCE is how iCalendar says "this
+ * one is off"; calendar apps then drop or grey it.
+ *
+ * It only works for entries that were exported before, since the UID is what
+ * matches them up. That is exactly the case here: you cannot discharge a client
+ * whose dates you never sent out.
+ */
+function cancellation(uid, date) {
+  return [
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTAMP:${stamp()}`,
+    // Must outrank the SEQUENCE:1 the live entries carry, or the cancellation
+    // is treated as stale and ignored.
+    'SEQUENCE:2',
+    'STATUS:CANCELLED',
+    'METHOD:CANCEL',
+    `DTSTART;VALUE=DATE:${compact(date)}`,
+    `DTEND;VALUE=DATE:${compact(nextDay(date))}`,
+    'SUMMARY:(removed)',
+    'TRANSP:TRANSPARENT',
+    'END:VEVENT',
+  ];
+}
+
+/**
+ * Every UID a client's export would currently produce, so it can be recorded
+ * and later cancelled. Ignores the switches: a deadline that was exported under
+ * one set of settings still needs cancelling under another.
+ */
+export function exportedUids(client, { leadTimes = DEFAULT_LEAD_TIMES } = {}) {
+  const uids = [];
+  getClientSchedule(client).forEach((m) => {
+    const baseUid = `${safeUid(client.id)}-${safeUid(m.id)}`;
+    uids.push({ uid: `${baseUid}@duedates`, date: m.date });
+    (leadTimes[m.category] || DEFAULT_LEAD_TIMES[m.category] || [7, 1])
+      .filter((d) => Number.isFinite(d) && d > 0)
+      .forEach((d) => uids.push({ uid: `${baseUid}-lead${d}@duedates`, date: addDays(m.date, -d) }));
+  });
+  return uids;
+}
+
+/**
+ * A calendar of nothing but cancellations. Import it into the calendar the
+ * originals went to and the discharged clients' entries disappear.
+ *
+ * `tombstones` is `[{ uid, date }]` — what the app recorded at export time.
+ */
+export function buildRemovalIcs(tombstones) {
+  const seen = new Set();
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Child First//Due Dates//EN',
+    'CALSCALE:GREGORIAN',
+    'METHOD:CANCEL',
+    'X-WR-CALNAME:Child First — Remove Discharged Clients',
+  ];
+  let count = 0;
+  tombstones.forEach(({ uid, date }) => {
+    if (!uid || !date || seen.has(uid)) return;
+    seen.add(uid);
+    count++;
+    lines.push(...cancellation(uid, date));
+  });
+  lines.push('END:VCALENDAR');
+  return { ics: lines.map(fold).join('\r\n') + '\r\n', count };
 }
 
 /**
