@@ -161,19 +161,47 @@ const blank = () => ({
   intakeDate: '', birthDate: '', type: 'child', notes: '',
 });
 
-function rowFromCells(cells, headerMap) {
+function rowFromCells(cells, headerMap, offset = 0) {
   const c = blank();
   Object.entries(headerMap).forEach(([i, field]) => {
-    const value = (cells[i] || '').trim();
+    const value = (cells[Number(i) + offset] || '').trim();
     if (!value) return;
     if (field === 'name' || field === 'caregiverName') {
-      c[field] = extractName(value, value.length);
+      // A name cell often carries the client id and the birth date after the
+      // name ("Ruiz, Ada (24263) 2/27/2021"); cut at the date so the trailing
+      // digits cannot block the "Last, First" swap.
+      const d = findDates(value)[0];
+      c[field] = extractName(value, d ? d.index : value.length);
     } else {
       const d = findDates(value)[0];
       if (d) c[field] = d.iso;
     }
   });
   return c;
+}
+
+// How much of a row the header actually explained. A name is worth more than a
+// date because a row that found one is almost certainly aligned correctly.
+const rowScore = (c) =>
+  (c.name ? 2 : 0) +
+  [c.dob, c.intakeDate, c.caregiverDob, c.birthDate, c.caregiverName].filter(Boolean).length;
+
+/**
+ * Read one row against the header, allowing for an indented export.
+ *
+ * A caseload export often indents its data rows with empty cells the header row
+ * does not have, which slides every real column to the right. Read the row both
+ * straight and shifted by that difference and keep whichever explained more of
+ * it — reading it straight would otherwise put the birth date in the admission
+ * column and lose the name entirely, which looks like a valid row and is not.
+ */
+function rowFromCellsAligned(cells, headerMap, headerLead) {
+  const straight = rowFromCells(cells, headerMap);
+  const lead = cells.findIndex((cell) => cell !== '');
+  const offset = lead - headerLead;
+  if (lead < 0 || offset <= 0) return straight;
+  const shifted = rowFromCells(cells, headerMap, offset);
+  return rowScore(shifted) > rowScore(straight) ? shifted : straight;
 }
 
 // A caseload export usually announces its own size ("16 client(s) on caseload").
@@ -204,6 +232,7 @@ export function parseCaseload(text) {
 
   // A header row up top switches on column mapping for the whole paste.
   let headerMap = null;
+  let headerLead = 0;
   let startIndex = 0;
   for (let i = 0; i < Math.min(lines.length, 3); i++) {
     const line = lines[i];
@@ -211,7 +240,12 @@ export function parseCaseload(text) {
     const cells = splitCells(line);
     if (cells && HEADER_HINTS.test(line)) {
       const map = mapHeader(cells);
-      if (map) { headerMap = map; startIndex = i + 1; break; }
+      if (map) {
+        headerMap = map;
+        headerLead = Math.max(cells.findIndex((cell) => cell !== ''), 0);
+        startIndex = i + 1;
+        break;
+      }
     }
   }
 
@@ -226,7 +260,7 @@ export function parseCaseload(text) {
     if (headerMap) {
       const cells = splitCells(line);
       if (cells) {
-        const c = rowFromCells(cells, headerMap);
+        const c = rowFromCellsAligned(cells, headerMap, headerLead);
         if (c.name || c.dob || c.intakeDate) { finish(c, line); clients.push(c); continue; }
       }
     }
