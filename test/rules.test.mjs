@@ -361,6 +361,53 @@ test('no social security number survives a full caseload paste', () => {
   assert.ok(!/\d{3}-\d{2}-\d{4}/.test(JSON.stringify(clients)));
 });
 
+// ---- caseload paste that carries its column header --------------------------
+// The same export copied with the header row included. The header sits flush
+// left while every data row is indented by three empty cells, so a straight
+// column read lands three columns short: it loses the name and mistakes the
+// birth date for the admission date — a row that looks valid and is not.
+
+const HEADED_CASELOAD = [
+  'Client Name\tGender\tBirth Date\tSSN\tCaseload Organization\tAdmission Date\tPrimary Payer',
+  'Caseload for Reed, Jamie (10000)',
+  '2 client(s) on caseload',
+  '\t\t\tSmith, Aaron (10101) 5/14/2021\tM\t5/14/2021\t999-99-9999\tNC-CFCR RHA Behavioral Health\t1/20/2026 12:00 PM\t',
+  '\t\t\tDelacroix Vance, Rowan (10102) 9/06/2023\tF\t9/06/2023\t999-99-9999\tNC-CFCR RHA Behavioral Health\t(Not Admitted)\t',
+].join('\n');
+
+test('indented rows are aligned back onto a flush-left header', () => {
+  const { clients } = parseCaseload(HEADED_CASELOAD);
+  assert.equal(clients.length, 2);
+  assert.equal(clients[0].name, 'Aaron Smith');
+  assert.equal(clients[0].dob, '2021-05-14');
+  assert.equal(clients[0].intakeDate, '2026-01-20');
+});
+
+test('a name cell keeps the name and drops the id and birth date beside it', () => {
+  const { clients } = parseCaseload(HEADED_CASELOAD);
+  assert.equal(clients[1].name, 'Rowan Delacroix Vance');
+  assert.ok(!/\d/.test(clients[1].name), 'no client id or date survives in the name');
+});
+
+test('an unadmitted client keeps its birthday and leaves intake blank', () => {
+  const { clients } = parseCaseload(HEADED_CASELOAD);
+  assert.equal(clients[1].dob, '2023-09-06');
+  assert.equal(clients[1].intakeDate, '', 'a birth date must never stand in for an admission date');
+});
+
+test('a flush-left header over flush-left rows still reads straight', () => {
+  const text = 'Client Name\tBirth Date\tAdmission Date\nSmith, Aaron\t5/14/2021\t1/20/2026 12:00 PM';
+  const { clients } = parseCaseload(text);
+  assert.equal(clients[0].name, 'Aaron Smith');
+  assert.equal(clients[0].dob, '2021-05-14');
+  assert.equal(clients[0].intakeDate, '2026-01-20');
+});
+
+test('no social security number survives a headed caseload paste', () => {
+  const { clients } = parseCaseload(HEADED_CASELOAD);
+  assert.ok(!/\d{3}-\d{2}-\d{4}/.test(JSON.stringify(clients)));
+});
+
 // ---- initials mode ---------------------------------------------------------
 
 test('displayName reduces a name to initials on request', () => {
